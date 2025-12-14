@@ -109,7 +109,6 @@ def analyze_stock_technical(symbol):
 # 介面顯示組件
 # ==========================================
 
-# 調整欄位比例：由於中間有捲軸，可能佔一點寬度，我們稍微調整比例讓它更寬鬆
 COLS_RATIO = [1.3, 0.9, 1, 1, 1.3, 1.3, 1.3, 1, 0.6]
 
 def update_sort(column_name):
@@ -125,17 +124,21 @@ def get_header_label(label, col_name):
         return f"{label} {arrow}"
     return label
 
-def display_headers():
-    """顯示標題列 (這是固定不動的部分)"""
-    st.markdown("<div style='padding-right: 15px;'>", unsafe_allow_html=True) # 預留捲軸空間的微調
+def display_headers(key_suffix):
+    """
+    顯示標題列 (這是固定不動的部分)
+    key_suffix: 用來區分是台股(tw)還是美股(us)的標題，避免 key 重複
+    """
+    st.markdown("<div style='padding-right: 15px;'>", unsafe_allow_html=True) 
     cols = st.columns(COLS_RATIO)
     headers_map = [
         ("代號", "股票代號"), ("股數", "股數"), ("均價", "平均持有單價"), 
         ("現價", "最新股價"), ("總成本", "總投入成本(原幣)"), 
         ("現值", "現值(原幣)"), ("獲利", "獲利(原幣)"), ("報酬率%", "獲利率(%)")
     ]
+    # 這裡的 key 加上了 key_suffix，確保唯一性
     for col, (label, col_name) in zip(cols[:-1], headers_map):
-        if col.button(get_header_label(label, col_name), key=f"btn_head_{col_name}"):
+        if col.button(get_header_label(label, col_name), key=f"btn_head_{col_name}_{key_suffix}"):
             update_sort(col_name)
             st.rerun()
             
@@ -150,7 +153,6 @@ def display_stock_rows(df, currency_type):
     except:
         df_sorted = df
 
-    # 迴圈產生資料列
     for index, row in df_sorted.iterrows():
         c1, c2, c3, c4, c5, c6, c7, c8, c9 = st.columns(COLS_RATIO)
         symbol = row["股票代號"]
@@ -172,7 +174,6 @@ def display_stock_rows(df, currency_type):
         c8.markdown(f":{color}[{roi:.2f}%]")
         if c9.button("🗑️", key=f"del_{symbol}"): remove_stock(symbol); st.rerun()
         
-        # 加一條細線分隔每一列
         st.markdown("<hr style='margin: 5px 0; border-top: 1px solid #eee;'>", unsafe_allow_html=True)
 
 def display_subtotal_row(df, currency_type):
@@ -202,7 +203,6 @@ tab1, tab2 = st.tabs(["📊 庫存與資產配置", "🧠 AI 技術分析與建�
 
 df_record = load_data()
 
-# 資料預處理
 if not df_record.empty:
     usd_rate = get_exchange_rate()
     df_record['幣別'] = df_record['股票代號'].apply(identify_currency)
@@ -280,7 +280,7 @@ with tab1:
 
         st.markdown("---")
 
-        # 詳細庫存列表 (標題即按鈕)
+        # 詳細庫存列表
         st.subheader("📦 詳細庫存列表 (標題可排序 / 滑動檢視)")
         
         df_tw = portfolio[portfolio["幣別"] == "TWD"].copy()
@@ -289,14 +289,9 @@ with tab1:
         # === 台股區塊 ===
         st.caption("🇹🇼 台股")
         if not df_tw.empty:
-            # 1. 顯示固定標題
-            display_headers()
-            
-            # 2. 顯示滑動內容區 (設定高度為 300px)
+            display_headers("tw") # 加入 key_suffix
             with st.container(height=300, border=False):
                 display_stock_rows(df_tw, "TWD")
-            
-            # 3. 顯示固定小計
             display_subtotal_row(df_tw, "TWD")
         else: st.write("無持倉")
 
@@ -305,11 +300,9 @@ with tab1:
         # === 美股區塊 ===
         st.caption("🇺🇸 美股")
         if not df_us.empty:
-            display_headers()
-            
+            display_headers("us") # 加入 key_suffix
             with st.container(height=300, border=False):
                 display_stock_rows(df_us, "USD")
-            
             us_val, us_prof = display_subtotal_row(df_us, "USD")
             st.markdown(f"<div style='text-align: right; color: gray; font-size: 0.9em;'>約 NT$ {us_val*usd_rate:,.0f} | 獲利 NT$ {us_prof*usd_rate:,.0f}</div>", unsafe_allow_html=True)
         else: st.write("無持倉")
