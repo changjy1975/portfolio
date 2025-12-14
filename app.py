@@ -151,3 +151,190 @@ def display_headers(key_suffix):
         if col.button(get_header_label(label, col_name), key=f"btn_head_{col_name}_{key_suffix}"):
             update_sort(col_name)
             st.rerun()
+            
+    cols[-1].markdown("**管理**")
+    st.markdown("</div>", unsafe_allow_html=True)
+    st.markdown("<hr style='margin: 0px 0 10px 0; border-top: 2px solid #666;'>", unsafe_allow_html=True)
+
+def display_stock_rows(df, currency_type):
+    try:
+        df_sorted = df.sort_values(by=st.session_state.sort_col, ascending=st.session_state.sort_asc)
+    except:
+        df_sorted = df
+
+    for index, row in df_sorted.iterrows():
+        c1, c2, c3, c4, c5, c6, c7, c8, c9 = st.columns(COLS_RATIO)
+        symbol = row["股票代號"]
+        price = row["最新股價"]
+        cost = row["總投入成本(原幣)"]
+        val = row["現值(原幣)"]
+        prof = row["獲利(原幣)"]
+        roi = row["獲利率(%)"]
+        color = "red" if prof > 0 else "green"
+        fmt = "{:,.0f}" if currency_type == "TWD" else "{:,.2f}"
+
+        c1.write(f"**{symbol}**")
+        
+        # --- 修改：股數顯示小數點後三位 ---
+        c2.write(f"{row['股數']:.3f}") 
+        
+        c3.write(f"{row['平均持有單價']:.2f}")
+        c4.write(f"{price:.2f}")
+        c5.write(fmt.format(cost))
+        c6.write(fmt.format(val))
+        c7.markdown(f":{color}[{fmt.format(prof)}]")
+        c8.markdown(f":{color}[{roi:.2f}%]")
+        if c9.button("🗑️", key=f"del_{symbol}"): remove_stock(symbol); st.rerun()
+        
+        st.markdown("<hr style='margin: 5px 0; border-top: 1px solid #eee;'>", unsafe_allow_html=True)
+
+def display_subtotal_row(df, currency_type):
+    total_cost = df["總投入成本(原幣)"].sum()
+    total_val = df["現值(原幣)"].sum()
+    total_profit = df["獲利(原幣)"].sum()
+    roi = (total_profit / total_cost * 100) if total_cost > 0 else 0
+    
+    st.markdown("<hr style='margin: 10px 0; border-top: 2px solid #666;'>", unsafe_allow_html=True)
+    c1, c2, c3, c4, c5, c6, c7, c8, c9 = st.columns(COLS_RATIO)
+    fmt = "{:,.0f}" if currency_type == "TWD" else "{:,.2f}"
+    color = "red" if total_profit > 0 else "green"
+    
+    c1.markdown("**🔹 類別小計**")
+    c5.markdown(f"**{fmt.format(total_cost)}**")
+    c6.markdown(f"**{fmt.format(total_val)}**")
+    c7.markdown(f":{color}[**{fmt.format(total_profit)}**]")
+    c8.markdown(f":{color}[**{roi:.2f}%**]")
+    return total_val, total_profit
+
+# ==========================================
+# 主程式邏輯
+# ==========================================
+
+tab1, tab2 = st.tabs(["📊 庫存與資產配置", "🧠 AI 技術分析與建議"])
+
+df_record = load_data()
+
+# 頁面頂部的刷新按鈕與時間
+col_refresh, col_time = st.columns([1, 4])
+if col_refresh.button("🔄 刷新全部數據"):
+    st.session_state.last_updated = datetime.now(pytz.timezone('Asia/Taipei')).strftime("%Y-%m-%d %H:%M:%S")
+    st.rerun()
+col_time.caption(f"最後更新時間: {st.session_state.last_updated} (台股數據來源: Yahoo Finance Fast Info)")
+
+if not df_record.empty:
+    usd_rate = get_exchange_rate()
+    df_record['幣別'] = df_record['股票代號'].apply(identify_currency)
+    df_record['總投入成本(原幣)'] = df_record['股數'] * df_record['持有成本單價']
+    
+    portfolio = df_record.groupby(["股票代號", "幣別"]).agg({
+        "股數": "sum",
+        "總投入成本(原幣)": "sum"
+    }).reset_index()
+    portfolio["平均持有單價"] = portfolio["總投入成本(原幣)"] / portfolio["股數"]
+
+# --- Tab 1: 庫存與資產配置 ---
+with tab1:
+    with st.sidebar:
+        st.header("📝 新增投資")
+        with st.form("add_stock_form"):
+            symbol_input = st.text_input("股票代號", value="2330.TW").upper().strip()
+            
+            # --- 修改：股數輸入框允許小數點 (step=0.001) ---
+            qty_input = st.number_input("股數", min_value=0.0, value=1000.0, step=0.001, format="%.3f")
+            
+            cost_input = st.number_input("單價 (原幣)", min_value=0.0, value=500.0)
+            if st.form_submit_button("新增"):
+                df = load_data()
+                new_data = pd.DataFrame({"股票代號": [symbol_input], "股數": [qty_input], "持有成本單價": [cost_input]})
+                df = pd.concat([df, new_data], ignore_index=True)
+                save_data(df)
+                st.success(f"已新增 {symbol_input}"); st.rerun()
+        if st.button("🚨 清空所有"):
+            if os.path.exists(DATA_FILE): os.remove(DATA_FILE); st.rerun()
+
+    if df_record.empty:
+        st.info("請先從側邊欄新增投資紀錄。")
+    else:
+        st.sidebar.markdown(f"--- \n 💱 匯率: **{usd_rate:.2f}**")
+        
+        unique_symbols = portfolio["股票代號"].tolist()
+        with st.spinner('正在同步最新市場即時價格 (Fast Info)...'):
+            current_prices = get_current_prices(unique_symbols)
+        
+        portfolio["最新股價"] = portfolio["股票代號"].map(current_prices)
+        portfolio = portfolio.dropna(subset=["最新股價"])
+
+        portfolio["現值(原幣)"] = portfolio["股數"] * portfolio["最新股價"]
+        portfolio["獲利(原幣)"] = portfolio["現值(原幣)"] - portfolio["總投入成本(原幣)"]
+        portfolio["獲利率(%)"] = (portfolio["獲利(原幣)"] / portfolio["總投入成本(原幣)"]) * 100
+        
+        portfolio["匯率因子"] = portfolio["幣別"].apply(lambda x: 1 if x == "TWD" else usd_rate)
+        portfolio["現值(TWD)"] = portfolio["現值(原幣)"] * portfolio["匯率因子"]
+        portfolio["總投入成本(TWD)"] = portfolio["總投入成本(原幣)"] * portfolio["匯率因子"]
+        portfolio["獲利(TWD)"] = portfolio["現值(TWD)"] - portfolio["總投入成本(TWD)"]
+
+        # 總資產看板
+        total_val = portfolio["現值(TWD)"].sum()
+        total_cost = portfolio["總投入成本(TWD)"].sum()
+        total_profit = portfolio["獲利(TWD)"].sum()
+        roi = (total_profit / total_cost * 100) if total_cost > 0 else 0
+
+        col1, col2, col3 = st.columns(3)
+        col1.metric("💰 總資產 (TWD)", f"${total_val:,.0f}")
+        col2.metric("💳 總投入成本 (TWD)", f"${total_cost:,.0f}")
+        col3.metric("📈 總獲利", f"${total_profit:,.0f}", f"{roi:.2f}%")
+        
+        st.markdown("---")
+
+        # 圖表區
+        st.subheader("📊 資產分佈分析")
+        col_pie1, col_pie2 = st.columns(2)
+        df_pie_cat = portfolio.groupby("幣別")["現值(TWD)"].sum().reset_index()
+        df_pie_cat["類別名稱"] = df_pie_cat["幣別"].map({"TWD": "台股 (TWD)", "USD": "美股 (USD)"})
+        
+        fig1 = px.pie(df_pie_cat, values="現值(TWD)", names="類別名稱", title="資產類別佔比", hole=0.4, color_discrete_sequence=px.colors.sequential.RdBu)
+        col_pie1.plotly_chart(fig1, use_container_width=True)
+
+        fig2 = px.pie(portfolio, values="現值(TWD)", names="股票代號", title="個股權重分佈", hole=0.4)
+        fig2.update_traces(textinfo='percent+label')
+        col_pie2.plotly_chart(fig2, use_container_width=True)
+
+        st.markdown("---")
+
+        # 詳細庫存列表
+        st.subheader("📦 詳細庫存列表")
+        
+        df_tw = portfolio[portfolio["幣別"] == "TWD"].copy()
+        df_us = portfolio[portfolio["幣別"] == "USD"].copy()
+
+        # === 台股區塊 ===
+        st.caption("🇹🇼 台股")
+        if not df_tw.empty:
+            display_headers("tw") 
+            with st.container(height=300, border=False):
+                display_stock_rows(df_tw, "TWD")
+            display_subtotal_row(df_tw, "TWD")
+        else: st.write("無持倉")
+
+        st.write("") 
+
+        # === 美股區塊 ===
+        st.caption("🇺🇸 美股")
+        if not df_us.empty:
+            display_headers("us") 
+            with st.container(height=300, border=False):
+                display_stock_rows(df_us, "USD")
+            us_val, us_prof = display_subtotal_row(df_us, "USD")
+            st.markdown(f"<div style='text-align: right; color: gray; font-size: 0.9em;'>約 NT$ {us_val*usd_rate:,.0f} | 獲利 NT$ {us_prof*usd_rate:,.0f}</div>", unsafe_allow_html=True)
+        else: st.write("無持倉")
+
+# --- Tab 2: 技術分析 ---
+with tab2:
+    if df_record.empty:
+        st.info("請先新增庫存股票。")
+    else:
+        st.subheader("🧠 持股健診與進出建議")
+        stock_list = portfolio["股票代號"].tolist()
+        selected_stock = st.selectbox("請選擇要分析的股票：", stock_list)
+
+        if st.button(f"🔍 分析 {selected_stock}") or selected_st
