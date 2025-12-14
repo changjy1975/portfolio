@@ -281,48 +281,56 @@ with tab1:
         st.markdown("---")
 
         # ==========================================
-        # 圖表區 (修改重點：加入下拉選單篩選)
+        # 圖表區 (對齊版)
         # ==========================================
         st.subheader("📊 資產分佈分析")
         col_pie1, col_pie2 = st.columns(2)
         
-        # 左圖：資產類別 (保持不變)
-        df_pie_cat = portfolio.groupby("幣別")["現值(TWD)"].sum().reset_index()
-        df_pie_cat["類別名稱"] = df_pie_cat["幣別"].map({"TWD": "台股 (TWD)", "USD": "美股 (USD)"})
-        
-        fig1 = px.pie(df_pie_cat, values="現值(TWD)", names="類別名稱", title="資產類別佔比 (總覽)", hole=0.4, color_discrete_sequence=px.colors.sequential.RdBu)
-        col_pie1.plotly_chart(fig1, use_container_width=True)
+        # --- 左欄：資產類別 ---
+        with col_pie1:
+            st.markdown("#### 🔹 資產類別佔比")
+            # 增加兩行空白，用來模擬右側 Selectbox 的高度，確保圖表頂端對齊
+            st.write("") 
+            st.write("") 
 
-        # 右圖：個股權重 (加入篩選功能)
+            df_pie_cat = portfolio.groupby("幣別")["現值(TWD)"].sum().reset_index()
+            df_pie_cat["類別名稱"] = df_pie_cat["幣別"].map({"TWD": "台股 (TWD)", "USD": "美股 (USD)"})
+            
+            # title=None 讓標題由外部 markdown 控制，排版更準確
+            fig1 = px.pie(df_pie_cat, values="現值(TWD)", names="類別名稱", title=None, hole=0.4, color_discrete_sequence=px.colors.sequential.RdBu)
+            st.plotly_chart(fig1, use_container_width=True)
+
+        # --- 右欄：個股權重 ---
         with col_pie2:
-            # 1. 篩選控制項
+            st.markdown("#### 🔹 個股權重分佈")
+            
+            # Selectbox 放在標題下方
             filter_option = st.selectbox(
-                "🔍 選擇個股顯示範圍：", 
+                "選擇顯示範圍", # 這個 label 其實會被隱藏
                 ["全部 (ALL)", "台股 (TW)", "美股 (US)"],
-                key="pie_chart_filter"
+                label_visibility="collapsed" # 隱藏 label 節省空間
             )
             
-            # 2. 根據選擇過濾資料
             if filter_option == "台股 (TW)":
                 df_pie_filtered = portfolio[portfolio["幣別"] == "TWD"]
             elif filter_option == "美股 (US)":
                 df_pie_filtered = portfolio[portfolio["幣別"] == "USD"]
             else:
-                df_pie_filtered = portfolio # 全部
+                df_pie_filtered = portfolio
 
-            # 3. 繪製圖表
             if not df_pie_filtered.empty:
+                # title=None
                 fig2 = px.pie(
                     df_pie_filtered, 
                     values="現值(TWD)", 
                     names="股票代號", 
-                    title=f"個股權重分佈 - {filter_option}", 
+                    title=None, 
                     hole=0.4
                 )
                 fig2.update_traces(textinfo='percent+label')
                 st.plotly_chart(fig2, use_container_width=True)
             else:
-                st.info(f"目前沒有 {filter_option} 的持股資料")
+                st.info(f"無 {filter_option} 資料")
 
         st.markdown("---")
 
