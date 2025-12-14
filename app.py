@@ -3,6 +3,8 @@ import pandas as pd
 import yfinance as yf
 import plotly.express as px
 import os
+from datetime import datetime
+import pytz
 
 # --- 設定檔案儲存路徑 ---
 DATA_FILE = "portfolio.csv"
@@ -18,6 +20,8 @@ if "sort_col" not in st.session_state:
     st.session_state.sort_col = "獲利(原幣)"
 if "sort_asc" not in st.session_state:
     st.session_state.sort_asc = False
+if "last_updated" not in st.session_state:
+    st.session_state.last_updated = "尚未更新"
 
 # ==========================================
 # 核心功能函數
@@ -40,27 +44,51 @@ def remove_stock(symbol):
 def get_exchange_rate():
     try:
         ticker = yf.Ticker("USDTWD=X")
-        rate = ticker.history(period="1d")['Close'].iloc[-1]
+        # 使用 fast_info 獲取匯率較準確
+        rate = ticker.fast_info.last_price
+        if rate is None or pd.isna(rate):
+             rate = ticker.history(period="1d")['Close'].iloc[-1]
         return rate
     except:
         return 32.5
 
 def get_current_prices(symbols):
+    """
+    優化版：使用 fast_info 與 history(1m) 獲取更即時的價格
+    """
     if not symbols: return {}
-    tickers = " ".join(symbols)
-    try:
-        data = yf.Tickers(tickers)
-        prices = {}
-        for symbol in symbols:
+    
+    # 這裡不使用一次性下載 (yf.Tickers)，改為個別抓取以確保精確度
+    # 雖然速度稍慢，但對台股盤中價格較準確
+    prices = {}
+    
+    for symbol in symbols:
+        try:
+            ticker = yf.Ticker(symbol)
+            price = None
+            
+            # 策略 1: 嘗試使用 fast_info (通常最新)
             try:
-                info = data.tickers[symbol].info
-                price = info.get('currentPrice') or info.get('regularMarketPreviousClose') or info.get('previousClose')
-                prices[symbol] = price
+                price = ticker.fast_info.last_price
             except:
-                prices[symbol] = None
-        return prices
-    except:
-        return {}
+                price = None
+
+            # 策略 2: 如果 fast_info 無效或為 nan，抓取最近 1 分鐘的交易資料
+            if price is None or pd.isna(price):
+                hist = ticker.history(period="1d", interval="1m")
+                if not hist.empty:
+                    price = hist["Close"].iloc[-1]
+            
+            # 策略 3: 如果還是沒有，回退到 info (可能有延遲)
+            if price is None or pd.isna(price):
+                info = ticker.info
+                price = info.get('currentPrice') or info.get('regularMarketPreviousClose') or info.get('previousClose')
+            
+            prices[symbol] = price
+        except:
+            prices[symbol] = None
+            
+    return prices
 
 def identify_currency(symbol):
     return "TWD" if (".TW" in symbol or ".TWO" in symbol) else "USD"
@@ -125,10 +153,6 @@ def get_header_label(label, col_name):
     return label
 
 def display_headers(key_suffix):
-    """
-    顯示標題列 (這是固定不動的部分)
-    key_suffix: 用來區分是台股(tw)還是美股(us)的標題，避免 key 重複
-    """
     st.markdown("<div style='padding-right: 15px;'>", unsafe_allow_html=True) 
     cols = st.columns(COLS_RATIO)
     headers_map = [
@@ -136,7 +160,6 @@ def display_headers(key_suffix):
         ("現價", "最新股價"), ("總成本", "總投入成本(原幣)"), 
         ("現值", "現值(原幣)"), ("獲利", "獲利(原幣)"), ("報酬率%", "獲利率(%)")
     ]
-    # 這裡的 key 加上了 key_suffix，確保唯一性
     for col, (label, col_name) in zip(cols[:-1], headers_map):
         if col.button(get_header_label(label, col_name), key=f"btn_head_{col_name}_{key_suffix}"):
             update_sort(col_name)
@@ -147,7 +170,6 @@ def display_headers(key_suffix):
     st.markdown("<hr style='margin: 0px 0 10px 0; border-top: 2px solid #666;'>", unsafe_allow_html=True)
 
 def display_stock_rows(df, currency_type):
-    """顯示內容列 (這部分會放在可捲動的容器中)"""
     try:
         df_sorted = df.sort_values(by=st.session_state.sort_col, ascending=st.session_state.sort_asc)
     except:
@@ -177,7 +199,6 @@ def display_stock_rows(df, currency_type):
         st.markdown("<hr style='margin: 5px 0; border-top: 1px solid #eee;'>", unsafe_allow_html=True)
 
 def display_subtotal_row(df, currency_type):
-    """顯示小計列 (這部分固定在底部)"""
     total_cost = df["總投入成本(原幣)"].sum()
     total_val = df["現值(原幣)"].sum()
     total_profit = df["獲利(原幣)"].sum()
@@ -202,6 +223,14 @@ def display_subtotal_row(df, currency_type):
 tab1, tab2 = st.tabs(["📊 庫存與資產配置", "🧠 AI 技術分析與建議"])
 
 df_record = load_data()
+
+# 頁面頂部的刷新按鈕與時間
+col_refresh, col_time = st.columns([1, 4])
+if col_refresh.button("🔄 刷新全部數據"):
+    st.session_state.last_updated = datetime.now(pytz.timezone('Asia/Taipei')).strftime("%Y-%m-%d %H:%M:%S")
+    st.rerun()
+col_time.caption(f"最後更新時間: {st.session_state.last_updated} (台股數據來源: Yahoo Finance Fast Info)")
+
 
 if not df_record.empty:
     usd_rate = get_exchange_rate()
@@ -237,7 +266,8 @@ with tab1:
         st.sidebar.markdown(f"--- \n 💱 匯率: **{usd_rate:.2f}**")
         
         unique_symbols = portfolio["股票代號"].tolist()
-        with st.spinner('正在同步市場數據...'):
+        # 移除快取 spinner，直接抓取
+        with st.spinner('正在同步最新市場即時價格 (Fast Info)...'):
             current_prices = get_current_prices(unique_symbols)
         
         portfolio["最新股價"] = portfolio["股票代號"].map(current_prices)
@@ -281,7 +311,7 @@ with tab1:
         st.markdown("---")
 
         # 詳細庫存列表
-        st.subheader("📦 詳細庫存列表 (標題可排序 / 滑動檢視)")
+        st.subheader("📦 詳細庫存列表")
         
         df_tw = portfolio[portfolio["幣別"] == "TWD"].copy()
         df_us = portfolio[portfolio["幣別"] == "USD"].copy()
@@ -289,7 +319,7 @@ with tab1:
         # === 台股區塊 ===
         st.caption("🇹🇼 台股")
         if not df_tw.empty:
-            display_headers("tw") # 加入 key_suffix
+            display_headers("tw") 
             with st.container(height=300, border=False):
                 display_stock_rows(df_tw, "TWD")
             display_subtotal_row(df_tw, "TWD")
@@ -300,15 +330,12 @@ with tab1:
         # === 美股區塊 ===
         st.caption("🇺🇸 美股")
         if not df_us.empty:
-            display_headers("us") # 加入 key_suffix
+            display_headers("us") 
             with st.container(height=300, border=False):
                 display_stock_rows(df_us, "USD")
             us_val, us_prof = display_subtotal_row(df_us, "USD")
             st.markdown(f"<div style='text-align: right; color: gray; font-size: 0.9em;'>約 NT$ {us_val*usd_rate:,.0f} | 獲利 NT$ {us_prof*usd_rate:,.0f}</div>", unsafe_allow_html=True)
         else: st.write("無持倉")
-        
-        st.markdown("---")
-        if st.button("🔄 刷新數據"): st.rerun()
 
 # --- Tab 2: 技術分析 ---
 with tab2:
