@@ -174,10 +174,7 @@ def display_stock_rows(df, currency_type):
         fmt = "{:,.0f}" if currency_type == "TWD" else "{:,.2f}"
 
         c1.write(f"**{symbol}**")
-        
-        # --- 修改：股數顯示小數點後三位 ---
         c2.write(f"{row['股數']:.3f}") 
-        
         c3.write(f"{row['平均持有單價']:.2f}")
         c4.write(f"{price:.2f}")
         c5.write(fmt.format(cost))
@@ -238,10 +235,7 @@ with tab1:
         st.header("📝 新增投資")
         with st.form("add_stock_form"):
             symbol_input = st.text_input("股票代號", value="2330.TW").upper().strip()
-            
-            # --- 修改：股數輸入框允許小數點 (step=0.001) ---
             qty_input = st.number_input("股數", min_value=0.0, value=1000.0, step=0.001, format="%.3f")
-            
             cost_input = st.number_input("單價 (原幣)", min_value=0.0, value=500.0)
             if st.form_submit_button("新增"):
                 df = load_data()
@@ -337,4 +331,34 @@ with tab2:
         stock_list = portfolio["股票代號"].tolist()
         selected_stock = st.selectbox("請選擇要分析的股票：", stock_list)
 
-        if st.button(f"🔍 分析 {selected_stock}") or selected_st
+        # 這裡修正了語法錯誤，並且優化了邏輯：只要選擇了股票就自動分析
+        if selected_stock:
+            with st.spinner(f"分析中 {selected_stock}..."):
+                result, error = analyze_stock_technical(selected_stock)
+                if error: st.error(error)
+                else:
+                    c1, c2, c3, c4 = st.columns(4)
+                    c1.metric("目前價格", f"{result['current_price']:.2f}")
+                    c2.metric("半年高 (壓力)", f"{result['high_6m']:.2f}")
+                    c3.metric("半年低 (支撐)", f"{result['low_6m']:.2f}")
+                    c4.metric("RSI 指標", f"{result['rsi']:.1f}")
+
+                    st.divider()
+
+                    st.subheader("💡 系統操作建議 (未來3個月)")
+                    st.markdown(f"#### 趨勢： **{result['trend']}**")
+                    
+                    col_b, col_s = st.columns(2)
+                    with col_b:
+                        st.info(f"**🟢 建議進場**: ${result['entry_target']:.2f} 附近\n\n(支撐位/均線回測)")
+                    with col_s:
+                        st.warning(f"**🔴 建議停利**: ${result['exit_target']:.2f} 附近\n\n(前波壓力區)")
+                    
+                    st.success(f"**綜合點評**：:{result['advice_color']}[{result['advice']}]")
+
+                    st.markdown("---")
+                    
+                    st.markdown("### 📊 週線走勢圖 (近半年)")
+                    chart_data = result['history_df'][['Close']].copy()
+                    chart_data['20週均線'] = chart_data['Close'].rolling(window=20).mean()
+                    st.line_chart(chart_data)
