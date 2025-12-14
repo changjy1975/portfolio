@@ -280,18 +280,49 @@ with tab1:
         
         st.markdown("---")
 
-        # 圖表區
+        # ==========================================
+        # 圖表區 (修改重點：加入下拉選單篩選)
+        # ==========================================
         st.subheader("📊 資產分佈分析")
         col_pie1, col_pie2 = st.columns(2)
+        
+        # 左圖：資產類別 (保持不變)
         df_pie_cat = portfolio.groupby("幣別")["現值(TWD)"].sum().reset_index()
         df_pie_cat["類別名稱"] = df_pie_cat["幣別"].map({"TWD": "台股 (TWD)", "USD": "美股 (USD)"})
         
-        fig1 = px.pie(df_pie_cat, values="現值(TWD)", names="類別名稱", title="資產類別佔比", hole=0.4, color_discrete_sequence=px.colors.sequential.RdBu)
+        fig1 = px.pie(df_pie_cat, values="現值(TWD)", names="類別名稱", title="資產類別佔比 (總覽)", hole=0.4, color_discrete_sequence=px.colors.sequential.RdBu)
         col_pie1.plotly_chart(fig1, use_container_width=True)
 
-        fig2 = px.pie(portfolio, values="現值(TWD)", names="股票代號", title="個股權重分佈", hole=0.4)
-        fig2.update_traces(textinfo='percent+label')
-        col_pie2.plotly_chart(fig2, use_container_width=True)
+        # 右圖：個股權重 (加入篩選功能)
+        with col_pie2:
+            # 1. 篩選控制項
+            filter_option = st.selectbox(
+                "🔍 選擇個股顯示範圍：", 
+                ["全部 (ALL)", "台股 (TW)", "美股 (US)"],
+                key="pie_chart_filter"
+            )
+            
+            # 2. 根據選擇過濾資料
+            if filter_option == "台股 (TW)":
+                df_pie_filtered = portfolio[portfolio["幣別"] == "TWD"]
+            elif filter_option == "美股 (US)":
+                df_pie_filtered = portfolio[portfolio["幣別"] == "USD"]
+            else:
+                df_pie_filtered = portfolio # 全部
+
+            # 3. 繪製圖表
+            if not df_pie_filtered.empty:
+                fig2 = px.pie(
+                    df_pie_filtered, 
+                    values="現值(TWD)", 
+                    names="股票代號", 
+                    title=f"個股權重分佈 - {filter_option}", 
+                    hole=0.4
+                )
+                fig2.update_traces(textinfo='percent+label')
+                st.plotly_chart(fig2, use_container_width=True)
+            else:
+                st.info(f"目前沒有 {filter_option} 的持股資料")
 
         st.markdown("---")
 
@@ -331,7 +362,6 @@ with tab2:
         stock_list = portfolio["股票代號"].tolist()
         selected_stock = st.selectbox("請選擇要分析的股票：", stock_list)
 
-        # 這裡修正了語法錯誤，並且優化了邏輯：只要選擇了股票就自動分析
         if selected_stock:
             with st.spinner(f"分析中 {selected_stock}..."):
                 result, error = analyze_stock_technical(selected_stock)
