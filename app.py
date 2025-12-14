@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import yfinance as yf
-import plotly.express as px  # 新增繪圖套件
+import plotly.express as px
 import os
 
 # --- 設定檔案儲存路徑 ---
@@ -16,24 +16,20 @@ st.title("📈 智能投資組合戰情室")
 # ==========================================
 
 def load_data():
-    """讀取投資紀錄"""
     if os.path.exists(DATA_FILE):
         return pd.read_csv(DATA_FILE)
     else:
         return pd.DataFrame(columns=["股票代號", "股數", "持有成本單價"])
 
 def save_data(df):
-    """儲存投資紀錄"""
     df.to_csv(DATA_FILE, index=False)
 
 def remove_stock(symbol):
-    """刪除指定股票代號"""
     df = load_data()
     df = df[df["股票代號"] != symbol]
     save_data(df)
 
 def get_exchange_rate():
-    """獲取 USD/TWD 匯率"""
     try:
         ticker = yf.Ticker("USDTWD=X")
         rate = ticker.history(period="1d")['Close'].iloc[-1]
@@ -42,7 +38,6 @@ def get_exchange_rate():
         return 32.5
 
 def get_current_prices(symbols):
-    """獲取最新股價"""
     if not symbols: return {}
     tickers = " ".join(symbols)
     try:
@@ -195,7 +190,6 @@ with tab1:
     else:
         st.sidebar.markdown(f"--- \n 💱 匯率: **{usd_rate:.2f}**")
         
-        # 抓取股價與計算
         unique_symbols = portfolio["股票代號"].tolist()
         with st.spinner('正在同步市場數據...'):
             current_prices = get_current_prices(unique_symbols)
@@ -212,7 +206,7 @@ with tab1:
         portfolio["總投入成本(TWD)"] = portfolio["總投入成本(原幣)"] * portfolio["匯率因子"]
         portfolio["獲利(TWD)"] = portfolio["現值(TWD)"] - portfolio["總投入成本(TWD)"]
 
-        # --- 總資產看板 ---
+        # 總資產看板
         total_val = portfolio["現值(TWD)"].sum()
         total_cost = portfolio["總投入成本(TWD)"].sum()
         total_profit = portfolio["獲利(TWD)"].sum()
@@ -225,61 +219,64 @@ with tab1:
         
         st.markdown("---")
 
-        # ==========================================
-        # 新增：圓餅圖分析區塊 (使用 Plotly)
-        # ==========================================
+        # 圖表區
         st.subheader("📊 資產分佈分析")
-        
         col_pie1, col_pie2 = st.columns(2)
-
-        # 圖表 1: 台股 vs 美股 (類別佔比)
-        # 製作顯示用的標籤 ('TWD'->'台股', 'USD'->'美股')
         df_pie_cat = portfolio.groupby("幣別")["現值(TWD)"].sum().reset_index()
         df_pie_cat["類別名稱"] = df_pie_cat["幣別"].map({"TWD": "台股 (TWD)", "USD": "美股 (USD)"})
         
-        fig1 = px.pie(
-            df_pie_cat, 
-            values="現值(TWD)", 
-            names="類別名稱", 
-            title="資產類別佔比 (依現值)",
-            hole=0.4, # 設為甜甜圈圖
-            color_discrete_sequence=px.colors.sequential.RdBu # 配色
-        )
+        fig1 = px.pie(df_pie_cat, values="現值(TWD)", names="類別名稱", title="資產類別佔比", hole=0.4, color_discrete_sequence=px.colors.sequential.RdBu)
         col_pie1.plotly_chart(fig1, use_container_width=True)
 
-        # 圖表 2: 個股投資佔比
-        fig2 = px.pie(
-            portfolio, 
-            values="現值(TWD)", 
-            names="股票代號", 
-            title="所有持股權重分佈 (依現值)",
-            hole=0.4
-        )
-        fig2.update_traces(textinfo='percent+label') # 顯示標籤和百分比
+        fig2 = px.pie(portfolio, values="現值(TWD)", names="股票代號", title="個股權重分佈", hole=0.4)
+        fig2.update_traces(textinfo='percent+label')
         col_pie2.plotly_chart(fig2, use_container_width=True)
 
         st.markdown("---")
 
-        # --- 詳細庫存列表 ---
-        df_tw = portfolio[portfolio["幣別"] == "TWD"].copy()
-        df_us = portfolio[portfolio["幣別"] == "USD"].copy()
+        # ==========================================
+        # 新增：排序控制區
+        # ==========================================
+        st.subheader("📦 詳細庫存列表")
+        
+        col_sort1, col_sort2, col_sort3 = st.columns([1, 1, 3])
+        with col_sort1:
+            sort_by = st.selectbox("排序依據", ["股票代號", "獲利金額", "獲利率(%)", "現值總額", "持有成本"])
+        with col_sort2:
+            sort_order = st.radio("排序方式", ["由高到低 (⬇)", "由低到高 (⬆)"], horizontal=True)
+            
+        # 處理排序邏輯
+        sort_map = {
+            "股票代號": "股票代號",
+            "獲利金額": "獲利(原幣)",
+            "獲利率(%)": "獲利率(%)",
+            "現值總額": "現值(原幣)",
+            "持有成本": "總投入成本(原幣)"
+        }
+        ascending = True if "由低到高" in sort_order else False
+        target_col = sort_map[sort_by]
 
-        st.subheader("🇹🇼 台股庫存")
+        # 分割並排序資料
+        df_tw = portfolio[portfolio["幣別"] == "TWD"].copy().sort_values(by=target_col, ascending=ascending)
+        df_us = portfolio[portfolio["幣別"] == "USD"].copy().sort_values(by=target_col, ascending=ascending)
+
+        # 顯示表格
+        st.caption("🇹🇼 台股")
         if not df_tw.empty:
             display_headers()
             display_stock_rows(df_tw, "TWD")
             display_subtotal_row(df_tw, "TWD")
-        else: st.write("無台股")
+        else: st.write("無持倉")
 
-        st.write(""); st.write("")
+        st.write("") 
 
-        st.subheader("🇺🇸 美股庫存")
+        st.caption("🇺🇸 美股")
         if not df_us.empty:
             display_headers()
             display_stock_rows(df_us, "USD")
             us_val, us_prof = display_subtotal_row(df_us, "USD")
             st.markdown(f"<div style='text-align: right; color: gray; font-size: 0.9em;'>約 NT$ {us_val*usd_rate:,.0f} | 獲利 NT$ {us_prof*usd_rate:,.0f}</div>", unsafe_allow_html=True)
-        else: st.write("無美股")
+        else: st.write("無持倉")
         
         st.markdown("---")
         if st.button("🔄 刷新數據"): st.rerun()
@@ -298,19 +295,33 @@ with tab2:
                 result, error = analyze_stock_technical(selected_stock)
                 if error: st.error(error)
                 else:
+                    # 1. 顯示核心數據
                     c1, c2, c3, c4 = st.columns(4)
-                    c1.metric("價格", f"{result['current_price']:.2f}")
-                    c2.metric("半年高", f"{result['high_6m']:.2f}")
-                    c3.metric("半年低", f"{result['low_6m']:.2f}")
-                    c4.metric("RSI", f"{result['rsi']:.1f}")
+                    c1.metric("目前價格", f"{result['current_price']:.2f}")
+                    c2.metric("半年高 (壓力)", f"{result['high_6m']:.2f}")
+                    c3.metric("半年低 (支撐)", f"{result['low_6m']:.2f}")
+                    c4.metric("RSI 指標", f"{result['rsi']:.1f}")
 
+                    st.divider()
+
+                    # ==========================================
+                    # 修改位置：AI 建議移至 圖表上方
+                    # ==========================================
+                    st.subheader("💡 系統操作建議 (未來3個月)")
+                    st.markdown(f"#### 趨勢： **{result['trend']}**")
+                    
+                    col_b, col_s = st.columns(2)
+                    with col_b:
+                        st.info(f"**🟢 建議進場**: ${result['entry_target']:.2f} 附近\n\n(支撐位/均線回測)")
+                    with col_s:
+                        st.warning(f"**🔴 建議停利**: ${result['exit_target']:.2f} 附近\n\n(前波壓力區)")
+                    
+                    st.success(f"**綜合點評**：:{result['advice_color']}[{result['advice']}]")
+
+                    st.markdown("---")
+                    
+                    # 3. 顯示走勢圖
+                    st.markdown("### 📊 週線走勢圖 (近半年)")
                     chart_data = result['history_df'][['Close']].copy()
                     chart_data['20週均線'] = chart_data['Close'].rolling(window=20).mean()
                     st.line_chart(chart_data)
-
-                    st.divider()
-                    st.markdown(f"#### 趨勢： **{result['trend']}**")
-                    col_b, col_s = st.columns(2)
-                    col_b.info(f"**🟢 進場參考**: ${result['entry_target']:.2f}")
-                    col_s.warning(f"**🔴 停利參考**: ${result['exit_target']:.2f}")
-                    st.success(f"**建議**：:{result['advice_color']}[{result['advice']}]")
