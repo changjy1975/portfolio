@@ -12,12 +12,12 @@ st.set_page_config(page_title="台美股投資戰情室", layout="wide")
 st.title("📈 智能投資組合戰情室")
 
 # ==========================================
-# 狀態初始化 (用於記憶排序設定)
+# 狀態初始化
 # ==========================================
 if "sort_col" not in st.session_state:
-    st.session_state.sort_col = "獲利(原幣)" # 預設依獲利排序
+    st.session_state.sort_col = "獲利(原幣)"
 if "sort_asc" not in st.session_state:
-    st.session_state.sort_asc = False # 預設由高到低
+    st.session_state.sort_asc = False
 
 # ==========================================
 # 核心功能函數
@@ -106,64 +106,51 @@ def analyze_stock_technical(symbol):
         return None, str(e)
 
 # ==========================================
-# 介面顯示組件 (含排序邏輯)
+# 介面顯示組件
 # ==========================================
 
-COLS_RATIO = [1.3, 0.8, 1, 1, 1.3, 1.3, 1.3, 1, 0.5]
+# 調整欄位比例：由於中間有捲軸，可能佔一點寬度，我們稍微調整比例讓它更寬鬆
+COLS_RATIO = [1.3, 0.9, 1, 1, 1.3, 1.3, 1.3, 1, 0.6]
 
 def update_sort(column_name):
-    """更新排序狀態"""
     if st.session_state.sort_col == column_name:
-        # 如果點擊同一個欄位，切換順序 (Asc <-> Desc)
         st.session_state.sort_asc = not st.session_state.sort_asc
     else:
-        # 如果點擊不同欄位，切換過去並預設由高到低 (False)
         st.session_state.sort_col = column_name
         st.session_state.sort_asc = False
 
 def get_header_label(label, col_name):
-    """取得帶有箭頭的標題"""
     if st.session_state.sort_col == col_name:
         arrow = "▲" if st.session_state.sort_asc else "▼"
         return f"{label} {arrow}"
     return label
 
 def display_headers():
-    """顯示可點擊排序的標題列"""
+    """顯示標題列 (這是固定不動的部分)"""
+    st.markdown("<div style='padding-right: 15px;'>", unsafe_allow_html=True) # 預留捲軸空間的微調
     cols = st.columns(COLS_RATIO)
-    
-    # 定義標題與對應的 DataFrame 欄位名稱
-    # 格式: (顯示名稱, DataFrame欄位名)
     headers_map = [
-        ("代號", "股票代號"), 
-        ("股數", "股數"), 
-        ("均價", "平均持有單價"), 
-        ("現價", "最新股價"), 
-        ("總成本", "總投入成本(原幣)"), 
-        ("現值", "現值(原幣)"), 
-        ("獲利", "獲利(原幣)"), 
-        ("報酬率%", "獲利率(%)")
+        ("代號", "股票代號"), ("股數", "股數"), ("均價", "平均持有單價"), 
+        ("現價", "最新股價"), ("總成本", "總投入成本(原幣)"), 
+        ("現值", "現值(原幣)"), ("獲利", "獲利(原幣)"), ("報酬率%", "獲利率(%)")
     ]
-
-    # 生成前 8 個排序按鈕
     for col, (label, col_name) in zip(cols[:-1], headers_map):
         if col.button(get_header_label(label, col_name), key=f"btn_head_{col_name}"):
             update_sort(col_name)
             st.rerun()
             
-    # 第 9 欄是管理，不需要排序
     cols[-1].markdown("**管理**")
-    
-    st.markdown("<hr style='margin: 5px 0; border-top: 1px solid #ddd;'>", unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
+    st.markdown("<hr style='margin: 0px 0 10px 0; border-top: 2px solid #666;'>", unsafe_allow_html=True)
 
 def display_stock_rows(df, currency_type):
-    # 根據 Session State 進行排序
+    """顯示內容列 (這部分會放在可捲動的容器中)"""
     try:
         df_sorted = df.sort_values(by=st.session_state.sort_col, ascending=st.session_state.sort_asc)
-    except KeyError:
-        # 防止欄位對應錯誤
+    except:
         df_sorted = df
 
+    # 迴圈產生資料列
     for index, row in df_sorted.iterrows():
         c1, c2, c3, c4, c5, c6, c7, c8, c9 = st.columns(COLS_RATIO)
         symbol = row["股票代號"]
@@ -184,16 +171,22 @@ def display_stock_rows(df, currency_type):
         c7.markdown(f":{color}[{fmt.format(prof)}]")
         c8.markdown(f":{color}[{roi:.2f}%]")
         if c9.button("🗑️", key=f"del_{symbol}"): remove_stock(symbol); st.rerun()
+        
+        # 加一條細線分隔每一列
+        st.markdown("<hr style='margin: 5px 0; border-top: 1px solid #eee;'>", unsafe_allow_html=True)
 
 def display_subtotal_row(df, currency_type):
+    """顯示小計列 (這部分固定在底部)"""
     total_cost = df["總投入成本(原幣)"].sum()
     total_val = df["現值(原幣)"].sum()
     total_profit = df["獲利(原幣)"].sum()
     roi = (total_profit / total_cost * 100) if total_cost > 0 else 0
-    st.markdown("<hr style='margin: 5px 0; border-top: 2px solid #888;'>", unsafe_allow_html=True)
+    
+    st.markdown("<hr style='margin: 10px 0; border-top: 2px solid #666;'>", unsafe_allow_html=True)
     c1, c2, c3, c4, c5, c6, c7, c8, c9 = st.columns(COLS_RATIO)
     fmt = "{:,.0f}" if currency_type == "TWD" else "{:,.2f}"
     color = "red" if total_profit > 0 else "green"
+    
     c1.markdown("**🔹 類別小計**")
     c5.markdown(f"**{fmt.format(total_cost)}**")
     c6.markdown(f"**{fmt.format(total_val)}**")
@@ -288,26 +281,35 @@ with tab1:
         st.markdown("---")
 
         # 詳細庫存列表 (標題即按鈕)
-        st.subheader("📦 詳細庫存列表")
-        st.caption("點擊標題可進行排序")
+        st.subheader("📦 詳細庫存列表 (標題可排序 / 滑動檢視)")
         
         df_tw = portfolio[portfolio["幣別"] == "TWD"].copy()
         df_us = portfolio[portfolio["幣別"] == "USD"].copy()
 
-        # 顯示標題列 (全域通用)
-        display_headers()
-
+        # === 台股區塊 ===
         st.caption("🇹🇼 台股")
         if not df_tw.empty:
-            display_stock_rows(df_tw, "TWD")
+            # 1. 顯示固定標題
+            display_headers()
+            
+            # 2. 顯示滑動內容區 (設定高度為 300px)
+            with st.container(height=300, border=False):
+                display_stock_rows(df_tw, "TWD")
+            
+            # 3. 顯示固定小計
             display_subtotal_row(df_tw, "TWD")
         else: st.write("無持倉")
 
         st.write("") 
 
+        # === 美股區塊 ===
         st.caption("🇺🇸 美股")
         if not df_us.empty:
-            display_stock_rows(df_us, "USD")
+            display_headers()
+            
+            with st.container(height=300, border=False):
+                display_stock_rows(df_us, "USD")
+            
             us_val, us_prof = display_subtotal_row(df_us, "USD")
             st.markdown(f"<div style='text-align: right; color: gray; font-size: 0.9em;'>約 NT$ {us_val*usd_rate:,.0f} | 獲利 NT$ {us_prof*usd_rate:,.0f}</div>", unsafe_allow_html=True)
         else: st.write("無持倉")
