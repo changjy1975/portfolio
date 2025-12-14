@@ -174,7 +174,10 @@ def display_stock_rows(df, currency_type):
         fmt = "{:,.0f}" if currency_type == "TWD" else "{:,.2f}"
 
         c1.write(f"**{symbol}**")
+        
+        # --- 修改：股數顯示小數點後三位 ---
         c2.write(f"{row['股數']:.3f}") 
+        
         c3.write(f"{row['平均持有單價']:.2f}")
         c4.write(f"{price:.2f}")
         c5.write(fmt.format(cost))
@@ -235,7 +238,10 @@ with tab1:
         st.header("📝 新增投資")
         with st.form("add_stock_form"):
             symbol_input = st.text_input("股票代號", value="2330.TW").upper().strip()
+            
+            # --- 修改：股數輸入框允許小數點 (step=0.001) ---
             qty_input = st.number_input("股數", min_value=0.0, value=1000.0, step=0.001, format="%.3f")
+            
             cost_input = st.number_input("單價 (原幣)", min_value=0.0, value=500.0)
             if st.form_submit_button("新增"):
                 df = load_data()
@@ -331,8 +337,7 @@ with tab2:
         stock_list = portfolio["股票代號"].tolist()
         selected_stock = st.selectbox("請選擇要分析的股票：", stock_list)
 
-        # 這裡修正了語法錯誤，並且優化了邏輯：只要選擇了股票就自動分析
-        if selected_stock:
+        if st.button(f"🔍 分析 {selected_stock}") or selected_stock:
             with st.spinner(f"分析中 {selected_stock}..."):
                 result, error = analyze_stock_technical(selected_stock)
                 if error: st.error(error)
