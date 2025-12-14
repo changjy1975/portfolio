@@ -12,6 +12,14 @@ st.set_page_config(page_title="台美股投資戰情室", layout="wide")
 st.title("📈 智能投資組合戰情室")
 
 # ==========================================
+# 狀態初始化 (用於記憶排序設定)
+# ==========================================
+if "sort_col" not in st.session_state:
+    st.session_state.sort_col = "獲利(原幣)" # 預設依獲利排序
+if "sort_asc" not in st.session_state:
+    st.session_state.sort_asc = False # 預設由高到低
+
+# ==========================================
 # 核心功能函數
 # ==========================================
 
@@ -60,7 +68,6 @@ def identify_currency(symbol):
 # ==========================================
 # 技術分析邏輯
 # ==========================================
-
 def calculate_rsi(series, period=14):
     delta = series.diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
@@ -99,19 +106,65 @@ def analyze_stock_technical(symbol):
         return None, str(e)
 
 # ==========================================
-# 介面顯示組件
+# 介面顯示組件 (含排序邏輯)
 # ==========================================
 
 COLS_RATIO = [1.3, 0.8, 1, 1, 1.3, 1.3, 1.3, 1, 0.5]
 
+def update_sort(column_name):
+    """更新排序狀態"""
+    if st.session_state.sort_col == column_name:
+        # 如果點擊同一個欄位，切換順序 (Asc <-> Desc)
+        st.session_state.sort_asc = not st.session_state.sort_asc
+    else:
+        # 如果點擊不同欄位，切換過去並預設由高到低 (False)
+        st.session_state.sort_col = column_name
+        st.session_state.sort_asc = False
+
+def get_header_label(label, col_name):
+    """取得帶有箭頭的標題"""
+    if st.session_state.sort_col == col_name:
+        arrow = "▲" if st.session_state.sort_asc else "▼"
+        return f"{label} {arrow}"
+    return label
+
 def display_headers():
-    headers = ["代號", "股數", "均價", "現價", "總成本", "現值", "獲利", "報酬率%", "管理"]
+    """顯示可點擊排序的標題列"""
     cols = st.columns(COLS_RATIO)
-    for col, header in zip(cols, headers): col.markdown(f"**{header}**")
+    
+    # 定義標題與對應的 DataFrame 欄位名稱
+    # 格式: (顯示名稱, DataFrame欄位名)
+    headers_map = [
+        ("代號", "股票代號"), 
+        ("股數", "股數"), 
+        ("均價", "平均持有單價"), 
+        ("現價", "最新股價"), 
+        ("總成本", "總投入成本(原幣)"), 
+        ("現值", "現值(原幣)"), 
+        ("獲利", "獲利(原幣)"), 
+        ("報酬率%", "獲利率(%)")
+    ]
+
+    # 生成前 8 個排序按鈕
+    for col, (label, col_name) in zip(cols[:-1], headers_map):
+        if col.button(get_header_label(label, col_name), key=f"btn_head_{col_name}"):
+            update_sort(col_name)
+            st.rerun()
+            
+    # 第 9 欄是管理，不需要排序
+    cols[-1].markdown("**管理**")
+    
     st.markdown("<hr style='margin: 5px 0; border-top: 1px solid #ddd;'>", unsafe_allow_html=True)
 
 def display_stock_rows(df, currency_type):
-    for index, row in df.iterrows():
+    # 根據 Session State 進行排序
+    try:
+        df_sorted = df.sort_values(by=st.session_state.sort_col, ascending=st.session_state.sort_asc)
+    except KeyError:
+        # 防止欄位對應錯誤
+        df_sorted = df
+
+    for index, row in df_sorted.iterrows():
         c1, c2, c3, c4, c5, c6, c7, c8, c9 = st.columns(COLS_RATIO)
         symbol = row["股票代號"]
         price = row["最新股價"]
@@ -234,36 +287,18 @@ with tab1:
 
         st.markdown("---")
 
-        # ==========================================
-        # 新增：排序控制區
-        # ==========================================
+        # 詳細庫存列表 (標題即按鈕)
         st.subheader("📦 詳細庫存列表")
+        st.caption("點擊標題可進行排序")
         
-        col_sort1, col_sort2, col_sort3 = st.columns([1, 1, 3])
-        with col_sort1:
-            sort_by = st.selectbox("排序依據", ["股票代號", "獲利金額", "獲利率(%)", "現值總額", "持有成本"])
-        with col_sort2:
-            sort_order = st.radio("排序方式", ["由高到低 (⬇)", "由低到高 (⬆)"], horizontal=True)
-            
-        # 處理排序邏輯
-        sort_map = {
-            "股票代號": "股票代號",
-            "獲利金額": "獲利(原幣)",
-            "獲利率(%)": "獲利率(%)",
-            "現值總額": "現值(原幣)",
-            "持有成本": "總投入成本(原幣)"
-        }
-        ascending = True if "由低到高" in sort_order else False
-        target_col = sort_map[sort_by]
+        df_tw = portfolio[portfolio["幣別"] == "TWD"].copy()
+        df_us = portfolio[portfolio["幣別"] == "USD"].copy()
 
-        # 分割並排序資料
-        df_tw = portfolio[portfolio["幣別"] == "TWD"].copy().sort_values(by=target_col, ascending=ascending)
-        df_us = portfolio[portfolio["幣別"] == "USD"].copy().sort_values(by=target_col, ascending=ascending)
+        # 顯示標題列 (全域通用)
+        display_headers()
 
-        # 顯示表格
         st.caption("🇹🇼 台股")
         if not df_tw.empty:
-            display_headers()
             display_stock_rows(df_tw, "TWD")
             display_subtotal_row(df_tw, "TWD")
         else: st.write("無持倉")
@@ -272,7 +307,6 @@ with tab1:
 
         st.caption("🇺🇸 美股")
         if not df_us.empty:
-            display_headers()
             display_stock_rows(df_us, "USD")
             us_val, us_prof = display_subtotal_row(df_us, "USD")
             st.markdown(f"<div style='text-align: right; color: gray; font-size: 0.9em;'>約 NT$ {us_val*usd_rate:,.0f} | 獲利 NT$ {us_prof*usd_rate:,.0f}</div>", unsafe_allow_html=True)
@@ -295,7 +329,6 @@ with tab2:
                 result, error = analyze_stock_technical(selected_stock)
                 if error: st.error(error)
                 else:
-                    # 1. 顯示核心數據
                     c1, c2, c3, c4 = st.columns(4)
                     c1.metric("目前價格", f"{result['current_price']:.2f}")
                     c2.metric("半年高 (壓力)", f"{result['high_6m']:.2f}")
@@ -304,9 +337,6 @@ with tab2:
 
                     st.divider()
 
-                    # ==========================================
-                    # 修改位置：AI 建議移至 圖表上方
-                    # ==========================================
                     st.subheader("💡 系統操作建議 (未來3個月)")
                     st.markdown(f"#### 趨勢： **{result['trend']}**")
                     
@@ -320,7 +350,6 @@ with tab2:
 
                     st.markdown("---")
                     
-                    # 3. 顯示走勢圖
                     st.markdown("### 📊 週線走勢圖 (近半年)")
                     chart_data = result['history_df'][['Close']].copy()
                     chart_data['20週均線'] = chart_data['Close'].rolling(window=20).mean()
