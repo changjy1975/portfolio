@@ -185,13 +185,13 @@ def perform_portfolio_analysis(portfolio_df):
                     best_year = annual_rets.max()
                     worst_year = annual_rets.min()
 
-                # 這裡儲存原始數值，方便 Streamlit 原生排序
+                # --- 修正重點：將百分比指標乘以 100，以便在前端正確顯示 ---
                 performance_list.append({
                     "股票代號": symbol,
-                    "CAGR (%)": cagr, # 存小數，顯示時再轉 %
-                    "年化波動率 (%)": stdev,
-                    "Best Year (%)": best_year,
-                    "Worst Year (%)": worst_year,
+                    "CAGR (%)": cagr * 100,      # 修正：乘 100
+                    "年化波動率 (%)": stdev * 100, # 修正：乘 100
+                    "Best Year (%)": best_year * 100, # 修正：乘 100
+                    "Worst Year (%)": worst_year * 100, # 修正：乘 100
                     "Sharpe Ratio": sharpe,
                     "Sortino Ratio": sortino
                 })
@@ -496,7 +496,7 @@ with tab3:
             fig_heatmap = px.imshow(res['corr_matrix'], text_auto=".2f", aspect="auto", color_continuous_scale='RdBu_r', zmin=-1, zmax=1)
             st.plotly_chart(fig_heatmap, use_container_width=True)
 
-            # 3. 績效指標表格 (移除熱力圖顏色，改用原生排序)
+            # 3. 績效指標表格 (原生排序)
             st.markdown("### 📊 個股風險與報酬指標 (可點擊標題排序)")
             
             perf_df = res['perf_df']
