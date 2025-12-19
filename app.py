@@ -24,6 +24,20 @@ if "last_updated" not in st.session_state:
     st.session_state.last_updated = "尚未更新"
 
 # ==========================================
+# 頂部控制區 (刷新按鈕放在這裡)
+# ==========================================
+col_refresh, col_time = st.columns([1, 5])
+with col_refresh:
+    if st.button("🔄 刷新全部數據"):
+        st.session_state.last_updated = datetime.now(pytz.timezone('Asia/Taipei')).strftime("%Y-%m-%d %H:%M:%S")
+        st.rerun()
+with col_time:
+    # 使用 markdown 垂直置中顯示時間
+    st.markdown(f"<div style='padding-top: 10px; color: gray;'>最後更新時間: {st.session_state.last_updated} (台股來源: Yahoo Fast Info)</div>", unsafe_allow_html=True)
+
+st.divider() # 加一條分隔線區隔
+
+# ==========================================
 # 核心功能函數
 # ==========================================
 
@@ -211,13 +225,6 @@ tab1, tab2 = st.tabs(["📊 庫存與資產配置", "🧠 AI 技術分析與建�
 
 df_record = load_data()
 
-# 頁面頂部的刷新按鈕與時間
-col_refresh, col_time = st.columns([1, 4])
-if col_refresh.button("🔄 刷新全部數據"):
-    st.session_state.last_updated = datetime.now(pytz.timezone('Asia/Taipei')).strftime("%Y-%m-%d %H:%M:%S")
-    st.rerun()
-col_time.caption(f"最後更新時間: {st.session_state.last_updated} (台股數據來源: Yahoo Finance Fast Info)")
-
 if not df_record.empty:
     usd_rate = get_exchange_rate()
     df_record['幣別'] = df_record['股票代號'].apply(identify_currency)
@@ -289,14 +296,12 @@ with tab1:
         # --- 左欄：資產類別 ---
         with col_pie1:
             st.markdown("#### 🔹 資產類別佔比")
-            # 增加兩行空白，用來模擬右側 Selectbox 的高度，確保圖表頂端對齊
             st.write("") 
             st.write("") 
 
             df_pie_cat = portfolio.groupby("幣別")["現值(TWD)"].sum().reset_index()
             df_pie_cat["類別名稱"] = df_pie_cat["幣別"].map({"TWD": "台股 (TWD)", "USD": "美股 (USD)"})
             
-            # title=None 讓標題由外部 markdown 控制，排版更準確
             fig1 = px.pie(df_pie_cat, values="現值(TWD)", names="類別名稱", title=None, hole=0.4, color_discrete_sequence=px.colors.sequential.RdBu)
             st.plotly_chart(fig1, use_container_width=True)
 
@@ -304,11 +309,10 @@ with tab1:
         with col_pie2:
             st.markdown("#### 🔹 個股權重分佈")
             
-            # Selectbox 放在標題下方
             filter_option = st.selectbox(
-                "選擇顯示範圍", # 這個 label 其實會被隱藏
+                "選擇顯示範圍", 
                 ["全部 (ALL)", "台股 (TW)", "美股 (US)"],
-                label_visibility="collapsed" # 隱藏 label 節省空間
+                label_visibility="collapsed"
             )
             
             if filter_option == "台股 (TW)":
@@ -319,7 +323,6 @@ with tab1:
                 df_pie_filtered = portfolio
 
             if not df_pie_filtered.empty:
-                # title=None
                 fig2 = px.pie(
                     df_pie_filtered, 
                     values="現值(TWD)", 
