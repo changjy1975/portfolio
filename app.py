@@ -135,14 +135,13 @@ def analyze_stock_technical(symbol):
         return None, str(e)
 
 # ==========================================
-# 投資組合分析邏輯 (Tab 3) - 含績效指標
+# 投資組合分析邏輯 (Tab 3)
 # ==========================================
 def perform_portfolio_analysis(portfolio_df):
     symbols = portfolio_df["股票代號"].unique().tolist()
     if not symbols: return None, "無持股資料"
 
     try:
-        # 1. 下載數據 (36個月)
         tickers_str = " ".join(symbols)
         hist_data = yf.download(tickers_str, period="3y", interval="1d", auto_adjust=True)['Close']
         
@@ -151,69 +150,56 @@ def perform_portfolio_analysis(portfolio_df):
             
         hist_data = hist_data.dropna(how='all')
         
-        # 2. 相關係數與基本計算
         returns = hist_data.pct_change().dropna()
         corr_matrix = returns.corr()
         
-        # 3. 計算進階績效指標 (CAGR, Stdev, Sharpe, Sortino, Best/Worst Year)
         performance_list = []
         
         for symbol in hist_data.columns:
             try:
-                # 取得該股票的序列 (去除 NaN)
                 series = hist_data[symbol].dropna()
-                if len(series) < 20: continue # 資料過少不計算
+                if len(series) < 20: continue 
                 
-                # 日報酬
                 daily_rets = series.pct_change().dropna()
                 
-                # A. CAGR (年化複合成長率)
-                # 計算實際經過的年數
                 days_diff = (series.index[-1] - series.index[0]).days
                 years = days_diff / 365.25
                 total_return = (series.iloc[-1] / series.iloc[0]) - 1
                 cagr = ((series.iloc[-1] / series.iloc[0]) ** (1/years)) - 1 if years > 0 else 0
                 
-                # B. Stdev (年化波動率)
                 stdev = daily_rets.std() * np.sqrt(252)
                 
-                # C. Sharpe Ratio (夏普值) - 假設無風險利率為 0
                 mean_ret = daily_rets.mean() * 252
                 sharpe = mean_ret / stdev if stdev != 0 else 0
                 
-                # D. Sortino Ratio (索提諾比率) - 只考慮下行風險
                 negative_rets = daily_rets[daily_rets < 0]
                 downside_std = negative_rets.std() * np.sqrt(252)
                 sortino = mean_ret / downside_std if downside_std != 0 else 0
                 
-                # E. Best / Worst Year (年度報酬)
-                # 將日資料重採樣為年資料 ('Y' or 'YE')
                 annual_prices = series.resample('YE').last()
-                # 如果資料跨年度不足，手動補上第一筆作為起點計算
                 if len(annual_prices) < 2:
                      best_year = total_return
                      worst_year = total_return
                 else:
-                    # 計算年度變化率
                     annual_rets = series.resample('YE').apply(lambda x: (x.iloc[-1]/x.iloc[0])-1)
                     best_year = annual_rets.max()
                     worst_year = annual_rets.min()
 
+                # 這裡儲存原始數值，方便 Streamlit 原生排序
                 performance_list.append({
                     "股票代號": symbol,
-                    "CAGR (%)": cagr * 100,
-                    "年化波動率 (%)": stdev * 100,
-                    "Best Year (%)": best_year * 100,
-                    "Worst Year (%)": worst_year * 100,
+                    "CAGR (%)": cagr, # 存小數，顯示時再轉 %
+                    "年化波動率 (%)": stdev,
+                    "Best Year (%)": best_year,
+                    "Worst Year (%)": worst_year,
                     "Sharpe Ratio": sharpe,
                     "Sortino Ratio": sortino
                 })
             except Exception as e:
-                pass # 忽略計算錯誤的個股
+                pass 
 
         perf_df = pd.DataFrame(performance_list)
 
-        # 4. 再平衡建議
         suggestions = []
         total_val = portfolio_df["現值(TWD)"].sum()
         for idx, row in portfolio_df.iterrows():
@@ -333,7 +319,6 @@ tab1, tab2, tab3 = st.tabs(["📊 庫存與資產配置", "🧠 AI 技術分析�
 
 df_record = load_data()
 
-# 共同資料計算
 if not df_record.empty:
     usd_rate = get_exchange_rate()
     df_record['幣別'] = df_record['股票代號'].apply(identify_currency)
@@ -511,28 +496,30 @@ with tab3:
             fig_heatmap = px.imshow(res['corr_matrix'], text_auto=".2f", aspect="auto", color_continuous_scale='RdBu_r', zmin=-1, zmax=1)
             st.plotly_chart(fig_heatmap, use_container_width=True)
 
-            # 新增：績效指標表格
-            st.markdown("**📊 個股風險與報酬指標 (近36個月)**")
+            # 3. 績效指標表格 (移除熱力圖顏色，改用原生排序)
+            st.markdown("### 📊 個股風險與報酬指標 (可點擊標題排序)")
             
-            # 使用 Styler 進行格式化
             perf_df = res['perf_df']
             if not perf_df.empty:
+                # 使用 column_config 來定義顯示格式，並啟用原生排序
                 st.dataframe(
-                    perf_df.style.format({
-                        "CAGR (%)": "{:.2f}%",
-                        "年化波動率 (%)": "{:.2f}%",
-                        "Best Year (%)": "{:.2f}%",
-                        "Worst Year (%)": "{:.2f}%",
-                        "Sharpe Ratio": "{:.2f}",
-                        "Sortino Ratio": "{:.2f}"
-                    }).background_gradient(subset=["CAGR (%)", "Sharpe Ratio"], cmap="Greens"),
+                    perf_df,
+                    column_config={
+                        "股票代號": st.column_config.TextColumn("股票代號"),
+                        "CAGR (%)": st.column_config.NumberColumn("CAGR (年化報酬)", format="%.2f%%"),
+                        "年化波動率 (%)": st.column_config.NumberColumn("年化波動率", format="%.2f%%"),
+                        "Best Year (%)": st.column_config.NumberColumn("Best Year", format="%.2f%%"),
+                        "Worst Year (%)": st.column_config.NumberColumn("Worst Year", format="%.2f%%"),
+                        "Sharpe Ratio": st.column_config.NumberColumn("Sharpe (夏普)", format="%.2f"),
+                        "Sortino Ratio": st.column_config.NumberColumn("Sortino (索提諾)", format="%.2f"),
+                    },
                     use_container_width=True,
                     hide_index=True
                 )
             
             st.divider()
 
-            # 3. 再平衡建議
+            # 4. 再平衡建議
             st.markdown("### 3️⃣ 優劣分析與再平衡建議")
             for suggestion in res['suggestions']:
                 st.info(suggestion)
