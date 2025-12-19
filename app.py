@@ -5,7 +5,7 @@ import plotly.express as px
 import os
 from datetime import datetime
 import pytz
-import numpy as np # 新增 numpy 用於數學計算
+import numpy as np
 
 # --- 設定檔案儲存路徑 ---
 DATA_FILE = "portfolio.csv"
@@ -135,64 +135,108 @@ def analyze_stock_technical(symbol):
         return None, str(e)
 
 # ==========================================
-# 投資組合分析邏輯 (Tab 3 新增)
+# 投資組合分析邏輯 (Tab 3) - 含績效指標
 # ==========================================
 def perform_portfolio_analysis(portfolio_df):
-    """
-    執行投資組合深度分析：相關性、波動度、再平衡建議
-    """
     symbols = portfolio_df["股票代號"].unique().tolist()
     if not symbols: return None, "無持股資料"
 
     try:
-        # 1. 抓取過去 36 個月的收盤價
+        # 1. 下載數據 (36個月)
         tickers_str = " ".join(symbols)
-        # 使用 auto_adjust=True 獲取還原權息股價，計算報酬率較準確
         hist_data = yf.download(tickers_str, period="3y", interval="1d", auto_adjust=True)['Close']
         
-        # 如果只有一支股票，yf.download 回傳的是 Series，需轉為 DataFrame
         if isinstance(hist_data, pd.Series):
             hist_data = hist_data.to_frame(name=symbols[0])
             
-        # 清理數據 (去除空值)
         hist_data = hist_data.dropna(how='all')
         
-        # 2. 計算日報酬率
+        # 2. 相關係數與基本計算
         returns = hist_data.pct_change().dropna()
-        
-        # 3. 計算相關係數矩陣
         corr_matrix = returns.corr()
         
-        # 4. 準備再平衡建議
-        suggestions = []
+        # 3. 計算進階績效指標 (CAGR, Stdev, Sharpe, Sortino, Best/Worst Year)
+        performance_list = []
         
-        # 4.1 集中度檢查
+        for symbol in hist_data.columns:
+            try:
+                # 取得該股票的序列 (去除 NaN)
+                series = hist_data[symbol].dropna()
+                if len(series) < 20: continue # 資料過少不計算
+                
+                # 日報酬
+                daily_rets = series.pct_change().dropna()
+                
+                # A. CAGR (年化複合成長率)
+                # 計算實際經過的年數
+                days_diff = (series.index[-1] - series.index[0]).days
+                years = days_diff / 365.25
+                total_return = (series.iloc[-1] / series.iloc[0]) - 1
+                cagr = ((series.iloc[-1] / series.iloc[0]) ** (1/years)) - 1 if years > 0 else 0
+                
+                # B. Stdev (年化波動率)
+                stdev = daily_rets.std() * np.sqrt(252)
+                
+                # C. Sharpe Ratio (夏普值) - 假設無風險利率為 0
+                mean_ret = daily_rets.mean() * 252
+                sharpe = mean_ret / stdev if stdev != 0 else 0
+                
+                # D. Sortino Ratio (索提諾比率) - 只考慮下行風險
+                negative_rets = daily_rets[daily_rets < 0]
+                downside_std = negative_rets.std() * np.sqrt(252)
+                sortino = mean_ret / downside_std if downside_std != 0 else 0
+                
+                # E. Best / Worst Year (年度報酬)
+                # 將日資料重採樣為年資料 ('Y' or 'YE')
+                annual_prices = series.resample('YE').last()
+                # 如果資料跨年度不足，手動補上第一筆作為起點計算
+                if len(annual_prices) < 2:
+                     best_year = total_return
+                     worst_year = total_return
+                else:
+                    # 計算年度變化率
+                    annual_rets = series.resample('YE').apply(lambda x: (x.iloc[-1]/x.iloc[0])-1)
+                    best_year = annual_rets.max()
+                    worst_year = annual_rets.min()
+
+                performance_list.append({
+                    "股票代號": symbol,
+                    "CAGR (%)": cagr * 100,
+                    "年化波動率 (%)": stdev * 100,
+                    "Best Year (%)": best_year * 100,
+                    "Worst Year (%)": worst_year * 100,
+                    "Sharpe Ratio": sharpe,
+                    "Sortino Ratio": sortino
+                })
+            except Exception as e:
+                pass # 忽略計算錯誤的個股
+
+        perf_df = pd.DataFrame(performance_list)
+
+        # 4. 再平衡建議
+        suggestions = []
         total_val = portfolio_df["現值(TWD)"].sum()
         for idx, row in portfolio_df.iterrows():
             weight = row["現值(TWD)"] / total_val
-            if weight > 0.3: # 單一個股超過 30%
-                suggestions.append(f"⚠️ **集中度風險**：{row['股票代號']} 佔比達 {weight*100:.1f}%，建議適度減碼以分散風險。")
+            if weight > 0.3:
+                suggestions.append(f"⚠️ **集中度風險**：{row['股票代號']} 佔比達 {weight*100:.1f}%，建議適度減碼。")
         
-        # 4.2 相關性檢查 (找出高度連動的股票對)
-        # 只看相關係數 > 0.8 的 (且不是自己對自己)
-        high_corr_pairs = []
         cols = corr_matrix.columns
+        high_corr_pairs = []
         for i in range(len(cols)):
             for j in range(i+1, len(cols)):
                 c = corr_matrix.iloc[i, j]
-                if c > 0.8:
-                    high_corr_pairs.append(f"{cols[i]} & {cols[j]} (相關係數 {c:.2f})")
+                if c > 0.8: high_corr_pairs.append(f"{cols[i]} & {cols[j]}")
         
         if high_corr_pairs:
-            suggestions.append(f"🔗 **高相關性警示**：以下股票走勢高度連動，分散效果有限：\n" + ", ".join(high_corr_pairs))
+            suggestions.append(f"🔗 **連動風險**：以下股票走勢高度相關 (>0.8)：" + ", ".join(high_corr_pairs))
         
-        if not suggestions:
-            suggestions.append("✅ **太棒了！** 目前投資組合配置健康，無明顯集中或連動風險。")
+        if not suggestions: suggestions.append("✅ 投資組合配置健康，無明顯集中或連動風險。")
 
         return {
             "corr_matrix": corr_matrix,
             "suggestions": suggestions,
-            "returns_std": returns.std() * np.sqrt(252) * 100 # 年化波動率
+            "perf_df": perf_df
         }, None
 
     except Exception as e:
@@ -285,12 +329,11 @@ def display_subtotal_row(df, currency_type):
 # 主程式邏輯
 # ==========================================
 
-# 修改 Tabs 定義，加入第三個 Tab
 tab1, tab2, tab3 = st.tabs(["📊 庫存與資產配置", "🧠 AI 技術分析與建議", "⚖️ 投資組合分析與再平衡"])
 
 df_record = load_data()
 
-# 共同資料計算 (如果有的話)
+# 共同資料計算
 if not df_record.empty:
     usd_rate = get_exchange_rate()
     df_record['幣別'] = df_record['股票代號'].apply(identify_currency)
@@ -361,17 +404,14 @@ with tab1:
             st.markdown("#### 🔹 資產類別佔比")
             st.write("") 
             st.write("") 
-
             df_pie_cat = portfolio.groupby("幣別")["現值(TWD)"].sum().reset_index()
             df_pie_cat["類別名稱"] = df_pie_cat["幣別"].map({"TWD": "台股 (TWD)", "USD": "美股 (USD)"})
-            
             fig1 = px.pie(df_pie_cat, values="現值(TWD)", names="類別名稱", title=None, hole=0.4, color_discrete_sequence=px.colors.sequential.RdBu)
             st.plotly_chart(fig1, use_container_width=True)
 
         with col_pie2:
             st.markdown("#### 🔹 個股權重分佈")
             filter_option = st.selectbox("選擇顯示範圍", ["全部 (ALL)", "台股 (TW)", "美股 (US)"], label_visibility="collapsed")
-            
             if filter_option == "台股 (TW)": df_pie_filtered = portfolio[portfolio["幣別"] == "TWD"]
             elif filter_option == "美股 (US)": df_pie_filtered = portfolio[portfolio["幣別"] == "USD"]
             else: df_pie_filtered = portfolio
@@ -406,7 +446,6 @@ with tab1:
                 display_stock_rows(df_us, "USD")
             us_val, us_prof = display_subtotal_row(df_us, "USD")
             st.markdown(f"<div style='text-align: right; color: gray; font-size: 0.9em;'>約 NT$ {us_val*usd_rate:,.0f} | 獲利 NT$ {us_prof*usd_rate:,.0f}</div>", unsafe_allow_html=True)
-        else: st.write("無持倉")
 
 # --- Tab 2: 技術分析 ---
 with tab2:
@@ -432,78 +471,70 @@ with tab2:
 
                     st.subheader("💡 系統操作建議 (未來3個月)")
                     st.markdown(f"#### 趨勢： **{result['trend']}**")
-                    
                     col_b, col_s = st.columns(2)
                     with col_b: st.info(f"**🟢 建議進場**: ${result['entry_target']:.2f} 附近\n\n(支撐位/均線回測)")
                     with col_s: st.warning(f"**🔴 建議停利**: ${result['exit_target']:.2f} 附近\n\n(前波壓力區)")
-                    
                     st.success(f"**綜合點評**：:{result['advice_color']}[{result['advice']}]")
                     st.markdown("---")
-                    
                     st.markdown("### 📊 週線走勢圖 (近半年)")
                     chart_data = result['history_df'][['Close']].copy()
                     chart_data['20週均線'] = chart_data['Close'].rolling(window=20).mean()
                     st.line_chart(chart_data)
 
-# --- Tab 3: 投資組合分析與再平衡 (新增功能) ---
+# --- Tab 3: 投資組合分析與再平衡 ---
 with tab3:
     if df_record.empty:
         st.info("請先新增投資紀錄，系統才能進行組合分析。")
     else:
         st.subheader("⚖️ 投資組合健檢與再平衡")
-        st.markdown("透過數據分析您的投資組合風險，包含**資產配置**、**相關性分析**與**再平衡建議**。")
         
-        # 分析按鈕 (避免每次切換頁面都重新抓取大量歷史資料)
         if st.button("🚀 啟動/更新 深度分析 (需抓取36個月資料)", type="primary"):
             with st.spinner("正在下載歷史股價並進行關聯性分析... (可能需要幾秒鐘)"):
-                # 這裡需要傳入最新的 portfolio (已計算現值TWD)
                 analysis_result, err = perform_portfolio_analysis(portfolio)
-                
-                if err:
-                    st.error(f"分析失敗: {err}")
-                else:
-                    # 將結果存入 session_state 以便重繪時保留
-                    st.session_state['analysis_result'] = analysis_result
+                if err: st.error(f"分析失敗: {err}")
+                else: st.session_state['analysis_result'] = analysis_result
 
-        # 如果有分析結果就顯示
         if 'analysis_result' in st.session_state:
             res = st.session_state['analysis_result']
-            
             st.divider()
 
-            # 1. 投資組合分佈 (圓餅圖 - 直接複用)
+            # 1. 投資組合分佈
             st.markdown("### 1️⃣ 投資組合權重分佈 (TWD計價)")
             fig_pie_all = px.pie(portfolio, values="現值(TWD)", names="股票代號", title="全投組資金佔比", hole=0.4)
             fig_pie_all.update_traces(textinfo='percent+label')
             st.plotly_chart(fig_pie_all, use_container_width=True)
-
             st.divider()
 
-            # 2. 相關係數分析 (Heatmap)
+            # 2. 相關係數分析
             st.markdown("### 2️⃣ 個股相關係數矩陣 (近36個月)")
-            st.caption("相關係數越接近 **1 (深紅)** 代表兩者走勢越同步 (風險無法分散)；越接近 **-1 (深藍)** 代表走勢互補。")
-            
-            corr_matrix = res['corr_matrix']
-            fig_heatmap = px.imshow(
-                corr_matrix, 
-                text_auto=".2f", 
-                aspect="auto", 
-                color_continuous_scale='RdBu_r', # 紅藍配色
-                zmin=-1, zmax=1
-            )
+            st.caption("數值 > 0.8 代表高度正相關 (風險未分散)；數值 < 0 代表負相關 (具避險效果)。")
+            fig_heatmap = px.imshow(res['corr_matrix'], text_auto=".2f", aspect="auto", color_continuous_scale='RdBu_r', zmin=-1, zmax=1)
             st.plotly_chart(fig_heatmap, use_container_width=True)
 
-            # 顯示波動率排行
-            st.markdown("**📊 年化波動率 (風險值)**")
-            vol_df = res['returns_std'].sort_values(ascending=False).to_frame(name="年化波動率(%)")
-            st.dataframe(vol_df.style.format("{:.2f}%"), use_container_width=True)
-
+            # 新增：績效指標表格
+            st.markdown("**📊 個股風險與報酬指標 (近36個月)**")
+            
+            # 使用 Styler 進行格式化
+            perf_df = res['perf_df']
+            if not perf_df.empty:
+                st.dataframe(
+                    perf_df.style.format({
+                        "CAGR (%)": "{:.2f}%",
+                        "年化波動率 (%)": "{:.2f}%",
+                        "Best Year (%)": "{:.2f}%",
+                        "Worst Year (%)": "{:.2f}%",
+                        "Sharpe Ratio": "{:.2f}",
+                        "Sortino Ratio": "{:.2f}"
+                    }).background_gradient(subset=["CAGR (%)", "Sharpe Ratio"], cmap="Greens"),
+                    use_container_width=True,
+                    hide_index=True
+                )
+            
             st.divider()
 
             # 3. 再平衡建議
             st.markdown("### 3️⃣ 優劣分析與再平衡建議")
             for suggestion in res['suggestions']:
                 st.info(suggestion)
-                
         else:
             st.write("👆 請點擊上方按鈕開始分析。")
