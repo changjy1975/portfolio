@@ -156,11 +156,12 @@ if not df_raw.empty:
     portfolio["獲利(原幣)"] = portfolio["現值(原幣)"] - portfolio["總投入成本(原幣)"]
     portfolio["獲利率(%)"] = portfolio.apply(lambda r: (r["獲利(原幣)"]/r["總投入成本(原幣)"]*100) if r["總投入成本(原幣)"] != 0 else 0, axis=1)
     
+    # 換算為台幣指標
     portfolio["現值(TWD)"] = portfolio.apply(lambda r: r["現值(原幣)"] * (usd_rate if r["幣別"]=="USD" else 1), axis=1)
     portfolio["總成本(TWD)"] = portfolio.apply(lambda r: r["總投入成本(原幣)"] * (usd_rate if r["幣別"]=="USD" else 1), axis=1)
     portfolio["獲利(TWD)"] = portfolio["現值(TWD)"] - portfolio["總成本(TWD)"]
 
-# --- Tab 1 ---
+# --- Tab 1: 庫存配置與儀表板 ---
 with tab1:
     with st.sidebar:
         st.header("📝 新增投資紀錄")
@@ -176,12 +177,13 @@ with tab1:
     if df_raw.empty:
         st.info("尚無持股資料。")
     else:
-        # A. 核心儀表板
+        # A. 儀表板數據計算
         t_val = float(portfolio['現值(TWD)'].sum())
         t_profit = float(portfolio['獲利(TWD)'].sum())
         t_cost = float(portfolio['總成本(TWD)'].sum())
         t_roi = (t_profit / t_cost * 100) if t_cost != 0 else 0
         
+        # B. 儀表板 UI
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("💰 總資產 (TWD)", f"${t_val:,.0f}")
         m2.metric("📈 總獲利 (TWD)", f"${t_profit:,.0f}")
@@ -190,11 +192,11 @@ with tab1:
         
         st.divider()
         
-        # B. 圓餅圖區
-        st.subheader("📊 資產分佈分析")
-        col_chart1, col_chart2 = st.columns(2)
+        # C. 比例圓餅圖
+        st.subheader("📊 投資組合分配分析")
+        c_left, c_right = st.columns(2)
         
-        with col_chart1:
+        with c_left:
             st.markdown("#### 🔹 台美股配置比例")
             cat_df = portfolio.groupby("幣別")["現值(TWD)"].sum().reset_index()
             cat_df["類別"] = cat_df["幣別"].map({"TWD": "台股 (TWD)", "USD": "美股 (USD)"})
@@ -202,19 +204,20 @@ with tab1:
                              color_discrete_sequence=["#1f77b4", "#ff7f0e"])
             st.plotly_chart(fig_cat, use_container_width=True)
 
-        with col_chart2:
-            st.markdown("#### 🔹 個股權重佔比")
-            chart_view = st.selectbox("圖表過濾", ["全部資產", "僅限台股", "僅限美股"], label_visibility="collapsed")
-            df_plt = portfolio if chart_view == "全部資產" else (portfolio[portfolio["幣別"]=="TWD"] if chart_view=="僅限台股" else portfolio[portfolio["幣別"]=="USD"])
-            if not df_plt.empty:
-                fig_pie = px.pie(df_plt, values="現值(TWD)", names="股票代號", hole=0.4)
+        with c_right:
+            st.markdown("#### 🔹 個股權重比例")
+            chart_view = st.selectbox("圖表顯示範圍", ["全部資產", "僅限台股", "僅限美股"], label_visibility="collapsed")
+            df_p = portfolio if chart_view == "全部資產" else (portfolio[portfolio["幣別"]=="TWD"] if chart_view=="僅限台股" else portfolio[portfolio["幣別"]=="USD"])
+            if not df_p.empty:
+                fig_pie = px.pie(df_p, values="現值(TWD)", names="股票代號", hole=0.4)
                 fig_pie.update_traces(textinfo='percent+label')
                 st.plotly_chart(fig_pie, use_container_width=True)
             else:
                 st.write("無資料")
         
-        # C. 分區明細
         st.divider()
+        
+        # D. 持股明細 (分區)
         df_tw, df_us = portfolio[portfolio["幣別"]=="TWD"], portfolio[portfolio["幣別"]=="USD"]
         if not df_tw.empty:
             st.subheader("🇹🇼 台股明細")
@@ -224,11 +227,11 @@ with tab1:
             st.subheader("🇺🇸 美股明細")
             display_headers(); display_stock_rows(df_us); display_subtotal_row(df_us, "美股小計")
 
-# --- Tab 2 ---
+# --- Tab 2: AI 持股健診 ---
 with tab2:
     if not df_raw.empty:
         st.subheader("🧠 AI 持股技術面診斷")
-        sel_s = st.selectbox("選擇要健診的股票：", portfolio["股票代號"].tolist())
+        sel_s = st.selectbox("選擇要分析的股票：", portfolio["股票代號"].tolist())
         if st.button("🚀 啟動深度診斷"):
             res, err = analyze_stock_technical(sel_s)
             if err: st.error(err)
@@ -239,6 +242,7 @@ with tab2:
                 c2.metric("半年高 (壓力)", f"${res['high_6m']:.2f}")
                 c3.metric("半年低 (支撐)", f"${res['low_6m']:.2f}")
                 c4.metric("RSI 指標", f"{res['rsi']:.1f}")
+                
                 st.markdown(f"### 💡 診斷建議：:{res['advice_color']}[{res['advice']}]")
                 st.info(f"趨勢：{res['trend']} | 進場參考：${res['entry_target']:.2f} | 減碼參考：${res['exit_target']:.2f}")
                 st.line_chart(res['df']['Close'])
