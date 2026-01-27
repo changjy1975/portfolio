@@ -5,7 +5,6 @@ import plotly.express as px
 import os
 from datetime import datetime
 import numpy as np
-from scipy.optimize import minimize
 
 # --- 檔案儲存路徑 ---
 DATA_FILE = "portfolio.csv"
@@ -15,47 +14,11 @@ st.set_page_config(page_title="個人投資組合戰情室", layout="wide")
 st.title("📈 智能投資組合戰情室")
 
 # ==========================================
-# 1. 核心分析與數學模型
+# 1. 核心分析函數 (技術面)
 # ==========================================
 
-def calculate_mpt_optimization(returns_df):
-    """執行 MPT 優化計算：最小波動與最高夏普比率"""
-    returns_df = returns_df.astype(float).fillna(0)
-    mean_returns = returns_df.mean() * 252
-    cov_matrix = returns_df.cov() * 252
-    num_assets = len(mean_returns)
-    
-    if mean_returns.isnull().any() or cov_matrix.isnull().any().any():
-        return None
-
-    def portfolio_volatility(weights):
-        return np.sqrt(np.dot(weights.T, np.dot(cov_matrix, weights)))
-
-    def neg_sharpe_ratio(weights, risk_free_rate=0.02):
-        p_ret = np.sum(mean_returns * weights)
-        p_vol = portfolio_volatility(weights)
-        if p_vol < 1e-9: return 0
-        return -(p_ret - risk_free_rate) / p_vol
-
-    constraints = ({'type': 'eq', 'fun': lambda x: np.sum(x) - 1})
-    bounds = tuple((0, 1) for _ in range(num_assets))
-    initial_weights = num_assets * [1. / num_assets]
-
-    try:
-        min_vol_res = minimize(portfolio_volatility, initial_weights, method='SLSQP', bounds=bounds, constraints=constraints)
-        max_sharpe_res = minimize(neg_sharpe_ratio, initial_weights, method='SLSQP', bounds=bounds, constraints=constraints)
-        
-        return {
-            "symbols": list(returns_df.columns),
-            "mean_returns": mean_returns,
-            "cov_matrix": cov_matrix,
-            "min_vol_weights": min_vol_res.x,
-            "max_sharpe_weights": max_sharpe_res.x
-        }
-    except:
-        return None
-
 def calculate_rsi(series, period=14):
+    """計算 RSI 指標"""
     delta = series.diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
@@ -93,6 +56,7 @@ def analyze_stock_technical(symbol):
 # ==========================================
 
 def get_current_prices(symbols):
+    """修復版報價抓取：確保美股休市期間也能拿到價格"""
     prices = {}
     if not symbols: return prices
     for symbol in symbols:
@@ -172,12 +136,13 @@ def display_subtotal_row(df, label):
     c8.markdown(f":{'red' if t_prof > 0 else 'green'}[**{t_roi:.2f}%**]")
 
 # ==========================================
-# 4. 主介面邏輯
+# 4. 主程式邏輯
 # ==========================================
 
-tab1, tab2, tab3 = st.tabs(["📊 庫存配置", "🧠 AI 技術診斷", "⚖️ MPT 數學模擬"])
+tab1, tab2 = st.tabs(["📊 庫存配置", "🧠 AI 持股健診"])
 df_raw = load_data()
 
+# 資料預處理
 if not df_raw.empty:
     usd_rate = get_exchange_rate()
     df_raw["單筆成本"] = df_raw["股數"] * df_raw["持有成本單價"]
@@ -196,7 +161,7 @@ if not df_raw.empty:
 # --- Tab 1 ---
 with tab1:
     with st.sidebar:
-        st.header("📝 新增投資")
+        st.header("📝 新增投資紀錄")
         with st.form("add_form", clear_on_submit=True):
             s_in = st.text_input("代號 (如: 2330.TW, TSLA)", "").upper().strip()
             q_in = st.number_input("股數", min_value=0.0, value=0.0)
@@ -207,86 +172,56 @@ with tab1:
 
     if df_raw.empty: st.info("尚無持股資料。")
     else:
-        st.metric("💰 總資產 (TWD)", f"${float(portfolio['現值(TWD)'].sum()):,.0f}")
+        st.metric("💰 總資產 (TWD)", f"${float(portfolio['現值(TWD)'].sum()):,.0f}", help=f"當前匯率: {usd_rate}")
         st.divider()
+        
+        # 圓餅圖
         st.subheader("📊 投資佔比圓餅圖")
         chart_view = st.selectbox("圖表範圍", ["全部資產", "僅限台股", "僅限美股"])
         df_plt = portfolio if chart_view == "全部資產" else (portfolio[portfolio["幣別"]=="TWD"] if chart_view=="僅限台股" else portfolio[portfolio["幣別"]=="USD"])
         if not df_plt.empty:
-            fig = px.pie(df_plt, values="現值(TWD)", names="股票代號", hole=0.4); st.plotly_chart(fig, use_container_width=True)
+            fig = px.pie(df_plt, values="現值(TWD)", names="股票代號", hole=0.4)
+            fig.update_traces(textinfo='percent+label')
+            st.plotly_chart(fig, use_container_width=True)
         
+        # 分區列表
         st.divider()
         df_tw, df_us = portfolio[portfolio["幣別"]=="TWD"], portfolio[portfolio["幣別"]=="USD"]
-        if not df_tw.empty: st.subheader("🇹🇼 台股明細"); display_headers(); display_stock_rows(df_tw); display_subtotal_row(df_tw, "台股小計")
-        if not df_us.empty: st.subheader("🇺🇸 美股明細"); display_headers(); display_stock_rows(df_us); display_subtotal_row(df_us, "美股小計")
+        if not df_tw.empty:
+            st.subheader("🇹🇼 台股明細")
+            display_headers(); display_stock_rows(df_tw); display_subtotal_row(df_tw, "台股小計")
 
-# --- Tab 2: AI 技術診斷 (修正版) ---
+        if not df_us.empty:
+            st.subheader("🇺🇸 美股明細")
+            display_headers(); display_stock_rows(df_us); display_subtotal_row(df_us, "美股小計")
+
+# --- Tab 2: AI 持股健診 ---
 with tab2:
-    if df_raw.empty: st.info("請先新增標的。")
+    if df_raw.empty:
+        st.info("請先新增標的，系統才能進行診斷。")
     else:
-        st.subheader("🧠 AI 持股技術健診報告")
-        sel_s = st.selectbox("選擇分析股票：", portfolio["股票代號"].tolist())
-        if st.button("🚀 啟動診斷", key="btn_diag"):
-            res, err = analyze_stock_technical(sel_s)
-            if err: st.error(err)
-            else:
-                c1, c2, c3, c4 = st.columns(4)
-                c1.metric("價格", f"${res['current_price']:.2f}")
-                c2.metric("半年高", f"${res['high_6m']:.2f}")
-                c3.metric("半年低", f"${res['low_6m']:.2f}")
-                c4.metric("RSI", f"{res['rsi']:.1f}")
-                st.markdown(f"### 💡 建議：:{res['advice_color']}[{res['advice']}]")
-                st.info(f"趨勢：{res['trend']} | 建議低接：${res['entry_target']:.2f} | 建議調節：${res['exit_target']:.2f}")
-                st.line_chart(res['df']['Close'])
-
-# --- Tab 3: MPT 數學模擬 (修正版) ---
-with tab3:
-    st.subheader("⚖️ MPT 權重優化與年化報酬預測")
-    if not df_raw.empty and len(portfolio) >= 2:
-        if st.button("🚀 執行優化模擬", key="btn_mpt"):
-            try:
-                hist = yf.download(portfolio["股票代號"].tolist(), period="3y")['Close'].ffill().dropna()
-                if isinstance(hist, pd.Series): hist = hist.to_frame(name=portfolio["股票代號"].iloc[0])
-                mpt = calculate_mpt_optimization(hist.pct_change().dropna())
-                
-                if mpt:
-                    total_twd = float(portfolio["現值(TWD)"].sum())
-                    curr_w = []
-                    for s in mpt['symbols']:
-                        v = portfolio[portfolio["股票代號"]==s]["現值(TWD)"].sum()
-                        curr_w.append(float(v/total_twd))
-                    curr_w = np.array(curr_w)
-
-                    def get_perf(w):
-                        # 強制轉換為純 float 以解決 Unknown format code 'f' 錯誤
-                        r = float(np.sum(mpt['mean_returns'] * w) * 100)
-                        v = float(np.sqrt(np.dot(w.T, np.dot(mpt['cov_matrix'], w))) * 100)
-                        return r, v
+        st.subheader("🧠 AI 持股技術面診斷")
+        sel_s = st.selectbox("選擇要健診的股票：", portfolio["股票代號"].tolist())
+        if st.button("🚀 啟動深度診斷"):
+            with st.spinner("正在抓取大數據分析中..."):
+                res, err = analyze_stock_technical(sel_s)
+                if err: st.error(err)
+                else:
+                    st.divider()
+                    c1, c2, c3, c4 = st.columns(4)
+                    c1.metric("目前價格", f"${res['current_price']:.2f}")
+                    c2.metric("半年高 (壓力)", f"${res['high_6m']:.2f}")
+                    c3.metric("半年低 (支撐)", f"${res['low_6m']:.2f}")
+                    c4.metric("RSI 指標", f"{res['rsi']:.1f}")
                     
-                    r_now, v_now = get_perf(curr_w)
-                    r_min, v_min = get_perf(mpt['min_vol_weights'])
-                    r_max, v_max = get_perf(mpt['max_sharpe_weights'])
+                    st.markdown(f"### 💡 診斷建議：:{res['advice_color']}[{res['advice']}]")
+                    st.info(f"**趨勢狀態**：{res['trend']}  \n"
+                            f"**🟢 進場參考點**: ${res['entry_target']:.2f}  \n"
+                            f"**🔴 減碼參考點**: ${res['exit_target']:.2f}")
                     
-                    st.markdown("### 1️⃣ 方案績效預估對比")
-                    perf_table = pd.DataFrame({
-                        "方案": ["目前配置", "最小波動方案", "最高夏普方案"],
-                        "預期年化報酬": [r_now, r_min, r_max],
-                        "預期年化波動": [v_now, v_min, v_max]
-                    })
-                    st.table(perf_table.set_index("方案").style.format("{:.2f}%"))
-                    
-                    
-
-                    st.markdown("### 2️⃣ 建議權重對比")
-                    res_df = pd.DataFrame({
-                        "標的": mpt['symbols'],
-                        "目前權重": curr_w * 100,
-                        "最小波動建議": mpt['min_vol_weights'] * 100,
-                        "最高夏普建議": mpt['max_sharpe_weights'] * 100
-                    })
-                    st.dataframe(res_df.style.format("{:.2f}%"), use_container_width=True, hide_index=True)
-                    
-                    st.markdown("### 3️⃣ 分散度分析 (相關係數)")
-                    st.plotly_chart(px.imshow(hist.pct_change().corr(), text_auto=".2f", color_continuous_scale='RdBu_r'))
-            except Exception as e: st.error(f"分析失敗: {e}")
-    else: st.warning("請至少加入 2 支標的以執行 MPT 分析。")
+                    st.divider()
+                    st.subheader("📈 價格走勢與 20 日均線")
+                    # 繪製診斷圖表
+                    diag_chart = res['df'][['Close']].copy()
+                    diag_chart['20日均線'] = diag_chart['Close'].rolling(window=20).mean()
+                    st.line_chart(diag_chart)
