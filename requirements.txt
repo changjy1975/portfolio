@@ -3,4 +3,5 @@ pandas
 yfinance
 plotly
 numpy
-matplotlib
+scipy
+pytz
