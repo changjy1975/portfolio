@@ -15,7 +15,7 @@ st.set_page_config(page_title="個人投資組合戰情室", layout="wide")
 st.title("📈 智能投資組合戰情室")
 
 # ==========================================
-# 1. 核心分析函數
+# 1. 核心數學與分析函數
 # ==========================================
 
 def calculate_mpt_optimization(returns_df):
@@ -55,6 +55,7 @@ def calculate_mpt_optimization(returns_df):
         return None
 
 def calculate_rsi(series, period=14):
+    """計算 RSI 指標"""
     delta = series.diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
@@ -62,61 +63,49 @@ def calculate_rsi(series, period=14):
     return 100 - (100 / (1 + rs))
 
 def analyze_stock_technical(symbol):
-    """AI 技術診斷"""
+    """AI 技術診斷邏輯"""
     try:
         stock = yf.Ticker(symbol)
         df = stock.history(period="1y", interval="1d")
         if df.empty: return None, "無法獲取歷史資料"
         
+        # 計算指標
         current_price = float(df['Close'].iloc[-1])
         ma_20 = float(df['Close'].rolling(window=20).mean().iloc[-1])
-        rsi_curr = float(calculate_rsi(df['Close'], 14).iloc[-1])
-        df_6m = df.tail(126)
-        high_6m, low_6m = float(df_6m['High'].max()), float(df_6m['Low'].min())
+        rsi_series = calculate_rsi(df['Close'], 14)
+        rsi_curr = float(rsi_series.iloc[-1])
         
+        # 壓力與支撐 (近半年)
+        df_6m = df.tail(126)
+        high_6m = float(df_6m['High'].max())
+        low_6m = float(df_6m['Low'].min())
+        
+        # 診斷建議
         trend = "多頭排列 🐂" if current_price > ma_20 else "空頭/整理 🐻"
-        if rsi_curr > 70: advice, color = "過熱，建議減碼", "red"
-        elif rsi_curr < 30: advice, color = "超賣，建議佈局", "green"
-        else: advice, color = "趨勢持平", "orange"
+        if rsi_curr > 70: advice, color = "市場過熱，建議分批獲利減碼", "red"
+        elif rsi_curr < 30: advice, color = "超賣區間，可考慮低檔佈局", "green"
+        elif current_price > ma_20: advice, color = "趨勢偏多，建議持股續抱", "orange"
+        else: advice, color = "趨勢偏弱，建議觀望或區間操作", "gray"
 
         return {
-            "current_price": current_price, "high_6m": high_6m, "low_6m": low_6m,
-            "ma_20": ma_20, "rsi": rsi_curr, "trend": trend,
-            "entry_target": low_6m * 1.05, "exit_target": high_6m * 0.95,
-            "advice": advice, "advice_color": color, "df": df.tail(100)
+            "current_price": current_price,
+            "high_6m": high_6m,
+            "low_6m": low_6m,
+            "ma_20": ma_20,
+            "rsi": rsi_curr,
+            "trend": trend,
+            "entry_target": low_6m * 1.05,
+            "exit_target": high_6m * 0.95,
+            "advice": advice,
+            "advice_color": color,
+            "df": df.tail(100) # 回傳近 100 天畫圖用
         }, None
-    except Exception as e: return None, str(e)
+    except Exception as e:
+        return None, str(e)
 
 # ==========================================
-# 2. 報價與數據工具 (修復美股報價)
+# 2. 數據處理工具
 # ==========================================
-
-def get_current_prices(symbols):
-    """
-    修復版：逐一獲取價格，確保美股在休市期間也能拿到最後收盤價
-    """
-    prices = {}
-    if not symbols: return prices
-    
-    for symbol in symbols:
-        try:
-            t = yf.Ticker(symbol)
-            # 優先嘗試快速獲取即時價
-            p = t.fast_info.last_price
-            
-            # 如果 fast_info 失敗或回傳 NaN (常發生在美股非開盤時間)
-            if p is None or pd.isna(p) or p <= 0:
-                hist = t.history(period="1d")
-                if not hist.empty:
-                    p = hist['Close'].iloc[-1]
-                else:
-                    # 最後防線：使用 info (較慢但較全)
-                    p = t.info.get('regularMarketPrice') or t.info.get('previousClose')
-            
-            prices[symbol] = float(p) if p else 0.0
-        except:
-            prices[symbol] = 0.0
-    return prices
 
 def load_data():
     if os.path.exists(DATA_FILE):
@@ -127,19 +116,21 @@ def load_data():
         return df.dropna()
     return pd.DataFrame(columns=["股票代號", "股數", "持有成本單價"])
 
-def save_data(df): df.to_csv(DATA_FILE, index=False)
+def save_data(df):
+    df.to_csv(DATA_FILE, index=False)
 
 def get_exchange_rate():
     try:
         rate = yf.Ticker("USDTWD=X").fast_info.last_price
         return float(rate) if rate and not pd.isna(rate) else 32.5
-    except: return 32.5
+    except:
+        return 32.5
 
 def identify_currency(symbol):
     return "TWD" if (".TW" in symbol or ".TWO" in symbol) else "USD"
 
 # ==========================================
-# 3. UI 元件
+# 3. UI 組件
 # ==========================================
 
 COLS_RATIO = [1.3, 0.8, 0.9, 0.9, 1.2, 1.2, 1.2, 0.9, 0.6]
@@ -189,6 +180,7 @@ def display_subtotal_row(df, label):
 tab1, tab2, tab3 = st.tabs(["📊 庫存配置", "🧠 AI 技術診斷", "⚖️ MPT 數學模擬"])
 df_raw = load_data()
 
+# 資料清洗與計算
 if not df_raw.empty:
     usd_rate = get_exchange_rate()
     df_raw["單筆成本"] = df_raw["股數"] * df_raw["持有成本單價"]
@@ -196,9 +188,16 @@ if not df_raw.empty:
     portfolio["平均持有單價"] = portfolio["單筆成本"] / portfolio["股數"]
     portfolio.rename(columns={"單筆成本": "總投入成本(原幣)"}, inplace=True)
     
-    # 調用修復後的價格獲取函數
-    prices = get_current_prices(portfolio["股票代號"].tolist())
-    
+    unique_syms = portfolio["股票代號"].tolist()
+    # 批次下載最新價格
+    prices_data = yf.download(unique_syms, period="1d")['Close']
+    prices = {}
+    for s in unique_syms:
+        try:
+            val = float(prices_data[s].iloc[-1]) if len(unique_syms) > 1 else float(prices_data.iloc[-1])
+            prices[s] = val
+        except: prices[s] = 0.0
+
     portfolio["最新股價"] = portfolio["股票代號"].map(prices).astype(float)
     portfolio["幣別"] = portfolio["股票代號"].apply(identify_currency)
     portfolio["現值(原幣)"] = portfolio["股數"] * portfolio["最新股價"]
@@ -213,7 +212,7 @@ with tab1:
         with st.form("add_form", clear_on_submit=True):
             s_in = st.text_input("代號 (如: 2330.TW, TSLA)", "").upper().strip()
             q_in = st.number_input("股數", min_value=0.0, value=100.0)
-            c_in = st.number_input("買入單價", min_value=0.0, value=100.0)
+            c_in = st.number_input("單價", min_value=0.0, value=100.0)
             if st.form_submit_button("新增"):
                 if s_in and q_in > 0:
                     save_data(pd.concat([load_data(), pd.DataFrame([{"股票代號":s_in, "股數":q_in, "持有成本單價":c_in}])], ignore_index=True)); st.rerun()
@@ -223,8 +222,8 @@ with tab1:
         st.metric("💰 總資產 (TWD)", f"${float(portfolio['現值(TWD)'].sum()):,.0f}")
         st.divider()
         st.subheader("📊 資產佔比圖")
-        c_view = st.selectbox("圖表範圍", ["全部資產", "僅限台股", "僅限美股"])
-        df_p = portfolio if c_view == "全部資產" else (portfolio[portfolio["幣別"]=="TWD"] if c_view=="僅限台股" else portfolio[portfolio["幣別"]=="USD"])
+        c_view = st.selectbox("圖表範圍", ["全部", "台股", "美股"])
+        df_p = portfolio if c_view == "全部" else (portfolio[portfolio["幣別"]=="TWD"] if c_view=="台股" else portfolio[portfolio["幣別"]=="USD"])
         if not df_p.empty:
             fig = px.pie(df_p, values="現值(TWD)", names="股票代號", hole=0.4); st.plotly_chart(fig, use_container_width=True)
         
@@ -233,48 +232,71 @@ with tab1:
         if not df_tw.empty: st.subheader("🇹🇼 台股明細"); display_headers(); display_stock_rows(df_tw); display_subtotal_row(df_tw, "台股小計")
         if not df_us.empty: st.subheader("🇺🇸 美股明細"); display_headers(); display_stock_rows(df_us); display_subtotal_row(df_us, "美股小計")
 
-# --- Tab 2 ---
+# --- Tab 2: AI 技術診斷 (補完區) ---
 with tab2:
-    if df_raw.empty: st.info("請先新增標的。")
+    if df_raw.empty:
+        st.info("請先新增標的，系統才能進行技術診斷。")
     else:
-        st.subheader("🧠 AI 持股技術健診")
-        sel_s = st.selectbox("選擇分析股票：", portfolio["股票代號"].tolist())
-        if st.button("🚀 啟動診斷"):
-            res, err = analyze_stock_technical(sel_s)
-            if err: st.error(err)
-            else:
-                c1, c2, c3, c4 = st.columns(4)
-                c1.metric("價格", f"${res['current_price']:.2f}"); c2.metric("半年高", f"${res['high_6m']:.2f}")
-                c3.metric("半年低", f"${res['low_6m']:.2f}"); c4.metric("RSI", f"{res['rsi']:.1f}")
-                st.markdown(f"### 💡 建議：:{res['advice_color']}[{res['advice']}]")
-                st.line_chart(res['df']['Close'])
+        st.subheader("🧠 AI 持股技術健診報告")
+        selected_stock = st.selectbox("請選擇要分析的股票：", portfolio["股票代號"].tolist())
+        
+        if st.button("🚀 啟動深度診斷", type="primary"):
+            with st.spinner(f"正在對 {selected_stock} 進行技術面掃描..."):
+                res, err = analyze_stock_technical(selected_stock)
+                if err:
+                    st.error(f"分析失敗: {err}")
+                else:
+                    st.divider()
+                    col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+                    col_m1.metric("目前價格", f"${res['current_price']:.2f}")
+                    col_m2.metric("半年高 (壓力)", f"${res['high_6m']:.2f}")
+                    col_m3.metric("半年低 (支撐)", f"${res['low_6m']:.2f}")
+                    col_m4.metric("RSI 指標", f"{res['rsi']:.1f}")
 
-# --- Tab 3 ---
+                    st.markdown(f"### 💡 診斷建議：:{res['advice_color']}[{res['advice']}]")
+                    st.info(f"**趨勢狀態**：{res['trend']}  \n"
+                            f"**🟢 進場參考 (支撐位附近)**: ${res['entry_target']:.2f}  \n"
+                            f"**🔴 減碼參考 (壓力位附近)**: ${res['exit_target']:.2f}")
+
+                    st.divider()
+                    st.subheader("📈 價格走勢與 20 日均線")
+                    # 畫圖
+                    chart_data = res['df'][['Close']].copy()
+                    chart_data['20日均線'] = chart_data['Close'].rolling(window=20).mean()
+                    st.line_chart(chart_data)
+
+# --- Tab 3: MPT ---
 with tab3:
-    st.subheader("⚖️ MPT 權重優化與報酬預測")
+    st.subheader("⚖️ MPT 權重優化與年化報酬預測")
     if not df_raw.empty and len(portfolio) >= 2:
-        if st.button("🚀 執行模擬"):
+        if st.button("🚀 執行深度優化分析", type="primary"):
             try:
                 hist = yf.download(portfolio["股票代號"].tolist(), period="3y")['Close'].ffill().dropna()
                 mpt = calculate_mpt_optimization(hist.pct_change().dropna())
                 if mpt:
                     total_twd = float(portfolio["現值(TWD)"].sum())
                     curr_w = np.array([float(portfolio[portfolio["股票代號"]==s]["現值(TWD)"].sum()/total_twd) for s in mpt['symbols']])
+                    
                     def get_perf(w):
                         r = float(np.sum(mpt['mean_returns'] * w) * 100)
                         v = float(np.sqrt(np.dot(w.T, np.dot(mpt['cov_matrix'], w))) * 100)
                         return r, v
+                    
                     r_now, v_now = get_perf(curr_w)
                     r_min, v_min = get_perf(mpt['min_vol_weights'])
                     r_max, v_max = get_perf(mpt['max_sharpe_weights'])
-                    
-                    st.table(pd.DataFrame({
+
+                    st.markdown("### 1️⃣ 方案績效對比")
+                    perf_df = pd.DataFrame({
                         "方案": ["目前配置", "最小波動", "最高夏普"],
                         "預期報酬": [r_now, r_min, r_max],
                         "預期波動": [v_now, v_min, v_max]
-                    }).set_index("方案").style.format("{:.2f}%"))
+                    })
+                    st.table(perf_df.set_index("方案").style.format("{:.2f}%"))
                     
                     
                     
-                    st.dataframe(pd.DataFrame({"標的": mpt['symbols'], "目前": curr_w*100, "最小建議": mpt['min_vol_weights']*100, "最高建議": mpt['max_sharpe_weights']*100}).style.format("{:.2f}%"), use_container_width=True, hide_index=True)
+                    st.markdown("### 2️⃣ 建議權重表")
+                    res_df = pd.DataFrame({"標的": mpt['symbols'], "目前權重": curr_w*100, "最小波動建議": mpt['min_vol_weights']*100, "最高夏普建議": mpt['max_sharpe_weights']*100})
+                    st.dataframe(res_df.style.format("{:.2f}%"), use_container_width=True, hide_index=True)
             except Exception as e: st.error(f"分析失敗: {e}")
