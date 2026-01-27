@@ -4,4 +4,3 @@ yfinance
 plotly
 scipy
 numpy
-pytz
