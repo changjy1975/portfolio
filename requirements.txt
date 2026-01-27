@@ -2,6 +2,6 @@ streamlit
 pandas
 yfinance
 plotly
-numpy
 scipy
+numpy
 pytz
