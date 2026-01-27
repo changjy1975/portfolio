@@ -60,7 +60,8 @@ def get_current_prices(symbols):
                 hist = t.history(period="1d")
                 p = hist['Close'].iloc[-1] if not hist.empty else 0.0
             prices[symbol] = float(p)
-        except: prices[symbol] = 0.0
+        except:
+            prices[symbol] = 0.0
     return prices
 
 def load_data():
@@ -72,13 +73,15 @@ def load_data():
         return df
     return pd.DataFrame(columns=["股票代號", "股數", "持有成本單價"])
 
-def save_data(df): df.to_csv(DATA_FILE, index=False)
+def save_data(df):
+    df.to_csv(DATA_FILE, index=False)
 
 def get_exchange_rate():
     try:
         rate = yf.Ticker("USDTWD=X").fast_info.last_price
         return float(rate) if rate and not pd.isna(rate) else 32.5
-    except: return 32.5
+    except:
+        return 32.5
 
 def identify_currency(symbol):
     return "TWD" if (".TW" in symbol or ".TWO" in symbol) else "USD"
@@ -92,7 +95,8 @@ COLS_RATIO = [1.3, 0.8, 0.9, 0.9, 1.2, 1.2, 1.2, 0.9, 0.6]
 def display_headers():
     cols = st.columns(COLS_RATIO)
     labels = ["代號", "股數", "均價", "現價", "成本(原)", "現值(原)", "獲利(原)", "報酬率", "管理"]
-    for col, label in zip(cols, labels): col.markdown(f"**{label}**")
+    for col, label in zip(cols, labels):
+        col.markdown(f"**{label}**")
     st.markdown("---")
 
 def display_stock_rows(df):
@@ -112,7 +116,10 @@ def display_stock_rows(df):
         c7.markdown(f":{color}[{fmt.format(prof)}]")
         c8.markdown(f":{color}[{roi:.2f}%]")
         if c9.button("🗑️", key=f"del_{sym}"):
-            df_old = load_data(); df_old = df_old[df_old["股票代號"] != sym]; save_data(df_old); st.rerun()
+            df_old = load_data()
+            df_old = df_old[df_old["股票代號"] != sym]
+            save_data(df_old)
+            st.rerun()
 
 def display_subtotal_row(df, label):
     if df.empty: return
@@ -129,7 +136,7 @@ def display_subtotal_row(df, label):
     c8.markdown(f":{'red' if t_prof > 0 else 'green'}[**{t_roi:.2f}%**]")
 
 # ==========================================
-# 3. 主介面
+# 3. 主程式邏輯
 # ==========================================
 
 tab1, tab2 = st.tabs(["📊 庫存配置", "🧠 AI 持股健診"])
@@ -156,19 +163,20 @@ if not df_raw.empty:
 # --- Tab 1 ---
 with tab1:
     with st.sidebar:
-        st.header("📝 新增投資")
+        st.header("📝 新增投資紀錄")
         with st.form("add_form", clear_on_submit=True):
             s_in = st.text_input("代號 (如: 2330.TW, TSLA)", "").upper().strip()
             q_in = st.number_input("股數", min_value=0.0, value=0.0)
             c_in = st.number_input("買入單價", min_value=0.0, value=0.0)
             if st.form_submit_button("新增標的"):
                 if s_in and q_in > 0:
-                    save_data(pd.concat([load_data(), pd.DataFrame([{"股票代號":s_in, "股數":q_in, "持有成本單價":c_in}])], ignore_index=True)); st.rerun()
+                    save_data(pd.concat([load_data(), pd.DataFrame([{"股票代號":s_in, "股數":q_in, "持有成本單價":c_in}])], ignore_index=True))
+                    st.rerun()
 
     if df_raw.empty:
         st.info("尚無持股資料。")
     else:
-        # A. 儀表板
+        # A. 核心儀表板
         t_val = float(portfolio['現值(TWD)'].sum())
         t_profit = float(portfolio['獲利(TWD)'].sum())
         t_cost = float(portfolio['總成本(TWD)'].sum())
@@ -178,46 +186,59 @@ with tab1:
         m1.metric("💰 總資產 (TWD)", f"${t_val:,.0f}")
         m2.metric("📈 總獲利 (TWD)", f"${t_profit:,.0f}")
         m3.metric("📊 總報酬率", f"{t_roi:.2f}%")
-        m4.metric("💱 最新匯率", f"{usd_rate:.2f}")
+        m4.metric("💱 最新匯率 (USD/TWD)", f"{usd_rate:.2f}")
         
         st.divider()
         
-        # B. 圓餅圖
-        st.subheader("📊 資產配置比例")
-        c_left, c_right = st.columns(2)
+        # B. 圓餅圖區
+        st.subheader("📊 資產分佈分析")
+        col_chart1, col_chart2 = st.columns(2)
         
-        with c_left:
-            st.markdown("#### 🔹 台美股資金比例")
+        with col_chart1:
+            st.markdown("#### 🔹 台美股配置比例")
             cat_df = portfolio.groupby("幣別")["現值(TWD)"].sum().reset_index()
-            cat_df["類別"] = cat_df["幣別"].map({"TWD": "台股", "USD": "美股"})
-            st.plotly_chart(px.pie(cat_df, values="現值(TWD)", names="類別", hole=0.4), use_container_width=True)
+            cat_df["類別"] = cat_df["幣別"].map({"TWD": "台股 (TWD)", "USD": "美股 (USD)"})
+            fig_cat = px.pie(cat_df, values="現值(TWD)", names="類別", hole=0.4,
+                             color_discrete_sequence=["#1f77b4", "#ff7f0e"])
+            st.plotly_chart(fig_cat, use_container_width=True)
 
-        with c_right:
-            st.markdown("#### 🔹 個股佔比")
-            chart_view = st.selectbox("圖表範圍", ["全部", "台股", "美股"])
-            df_p = portfolio if chart_view == "全部" else (portfolio[portfolio["幣別"]=="TWD"] if chart_view=="台股" else portfolio[portfolio["幣別"]=="USD"])
-            if not df_p.empty:
-                st.plotly_chart(px.pie(df_p, values="現值(TWD)", names="股票代號", hole=0.4), use_container_width=True)
+        with col_chart2:
+            st.markdown("#### 🔹 個股權重佔比")
+            chart_view = st.selectbox("圖表過濾", ["全部資產", "僅限台股", "僅限美股"], label_visibility="collapsed")
+            df_plt = portfolio if chart_view == "全部資產" else (portfolio[portfolio["幣別"]=="TWD"] if chart_view=="僅限台股" else portfolio[portfolio["幣別"]=="USD"])
+            if not df_plt.empty:
+                fig_pie = px.pie(df_plt, values="現值(TWD)", names="股票代號", hole=0.4)
+                fig_pie.update_traces(textinfo='percent+label')
+                st.plotly_chart(fig_pie, use_container_width=True)
+            else:
+                st.write("無資料")
         
-        # C. 清單
+        # C. 分區明細
         st.divider()
         df_tw, df_us = portfolio[portfolio["幣別"]=="TWD"], portfolio[portfolio["幣別"]=="USD"]
         if not df_tw.empty:
             st.subheader("🇹🇼 台股明細")
             display_headers(); display_stock_rows(df_tw); display_subtotal_row(df_tw, "台股小計")
+
         if not df_us.empty:
             st.subheader("🇺🇸 美股明細")
             display_headers(); display_stock_rows(df_us); display_subtotal_row(df_us, "美股小計")
 
+# --- Tab 2 ---
 with tab2:
     if not df_raw.empty:
-        st.subheader("🧠 AI 持股健診")
-        sel_s = st.selectbox("分析對象", portfolio["股票代號"].tolist())
-        if st.button("🚀 啟動診斷"):
+        st.subheader("🧠 AI 持股技術面診斷")
+        sel_s = st.selectbox("選擇要健診的股票：", portfolio["股票代號"].tolist())
+        if st.button("🚀 啟動深度診斷"):
             res, err = analyze_stock_technical(sel_s)
             if err: st.error(err)
             else:
+                st.divider()
                 c1, c2, c3, c4 = st.columns(4)
-                c1.metric("現價", f"${res['current_price']:.2f}"); c2.metric("半年高", f"${res['high_6m']:.2f}")
-                c3.metric("半年低", f"${res['low_6m']:.2f}"); c4.metric("RSI", f"{res['rsi']:.1f}")
-                st.success(f"建議：{res['advice']}"); st.line_chart(res['df']['Close'])
+                c1.metric("目前價格", f"${res['current_price']:.2f}")
+                c2.metric("半年高 (壓力)", f"${res['high_6m']:.2f}")
+                c3.metric("半年低 (支撐)", f"${res['low_6m']:.2f}")
+                c4.metric("RSI 指標", f"{res['rsi']:.1f}")
+                st.markdown(f"### 💡 診斷建議：:{res['advice_color']}[{res['advice']}]")
+                st.info(f"趨勢：{res['trend']} | 進場參考：${res['entry_target']:.2f} | 減碼參考：${res['exit_target']:.2f}")
+                st.line_chart(res['df']['Close'])
