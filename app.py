@@ -23,19 +23,22 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 # ==========================================
-# 1. 核心數據獲取 (快取機制避免重複請求)
+# 1. 核心數據獲取 (快取機制)
 # ==========================================
 
 @st.cache_data(ttl=3600)
 def fetch_stock_data(symbols, period="1y"):
     if not symbols: return pd.DataFrame()
-    data = yf.download(symbols, period=period)['Close']
-    return data
+    try:
+        data = yf.download(symbols, period=period)['Close']
+        return data
+    except Exception:
+        return pd.DataFrame()
 
 @st.cache_data(ttl=3600)
 def get_exchange_rate():
     try:
-        # 2026 年匯率 API 抓取
+        # 2026 年市場匯率參考
         rate = yf.Ticker("USDTWD=X").fast_info.last_price
         return float(rate) if rate else 32.5
     except:
@@ -50,6 +53,7 @@ def calculate_mpt_optimization(returns_df):
     returns_df = returns_df.astype(float).dropna()
     if returns_df.empty: return None
     
+    # 年化報酬率與協方差矩陣
     mean_returns = returns_df.mean() * 252
     cov_matrix = returns_df.cov() * 252
     num_assets = len(mean_returns)
@@ -59,6 +63,7 @@ def calculate_mpt_optimization(returns_df):
         volatility = np.sqrt(np.dot(weights.T, np.dot(cov_matrix, weights)))
         return returns, volatility
 
+    # 夏普比率公式： $SR = \frac{R_p - R_f}{\sigma_p}$
     def neg_sharpe_ratio(weights, risk_free_rate=0.02):
         p_ret, p_vol = portfolio_performance(weights)
         return -(p_ret - risk_free_rate) / (p_vol + 1e-9)
@@ -76,9 +81,7 @@ def calculate_mpt_optimization(returns_df):
         return {
             "symbols": list(returns_df.columns),
             "min_vol_weights": opt_vol.x,
-            "max_sharpe_weights": opt_sharpe.x,
-            "mean_returns": mean_returns,
-            "cov_matrix": cov_matrix
+            "max_sharpe_weights": opt_sharpe.x
         }
     except:
         return None
@@ -149,7 +152,7 @@ df_raw = load_data()
 # --- 全域資料處理 ---
 if not df_raw.empty:
     usd_rate = get_exchange_rate()
-    # 聚合計算
+    # 聚合計算標的
     portfolio = df_raw.groupby("股票代號").apply(
         lambda x: pd.Series({
             "股數": x["股數"].sum(),
@@ -163,16 +166,17 @@ if not df_raw.empty:
     # 抓取報價
     with st.spinner("同步全球市場數據中..."):
         all_data = fetch_stock_data(unique_syms, period="5d")
+        # 處理單一或多標的分歧
         if len(unique_syms) == 1:
-            current_prices = {unique_syms[0]: all_data.iloc[-1]}
+            current_prices = {unique_syms[0]: float(all_data.iloc[-1]) if not all_data.empty else 0.0}
         else:
-            current_prices = all_data.iloc[-1].to_dict()
+            current_prices = all_data.iloc[-1].to_dict() if not all_data.empty else {}
     
-    portfolio["最新股價"] = portfolio["股票代號"].map(current_prices).astype(float)
+    portfolio["最新股價"] = portfolio["股票代號"].map(current_prices).fillna(0.0).astype(float)
     portfolio["幣別"] = portfolio["股票代號"].apply(identify_currency)
     portfolio["現值(原幣)"] = portfolio["股數"] * portfolio["最新股價"]
     portfolio["獲利(原幣)"] = portfolio["現值(原幣)"] - portfolio["總投入成本(原幣)"]
-    portfolio["獲利率(%)"] = (portfolio["獲利(原幣)"] / portfolio["總投入成本(原幣)"]) * 100
+    portfolio["獲利率(%)"] = (portfolio["獲利(原幣)"] / (portfolio["總投入成本(原幣)"] + 1e-9)) * 100
     portfolio["現值(TWD)"] = portfolio.apply(lambda r: r["現值(原幣)"] * (usd_rate if r["幣別"]=="USD" else 1), axis=1)
 
 # --- Tab 1: 庫存配置 ---
@@ -212,11 +216,11 @@ with tab2:
         if st.button("🚀 啟動深度分析"):
             hist = yf.download(target, period="1y")
             if not hist.empty:
-                # 計算 MA 與 RSI
+                # 指標計算
                 ma20 = hist['Close'].rolling(20).mean()
                 rsi = calculate_rsi(hist['Close'])
                 
-                # Plotly 互動圖表
+                # 圖表繪製
                 fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.1, row_heights=[0.7, 0.3])
                 fig.add_trace(go.Scatter(x=hist.index, y=hist['Close'], name="價格"), row=1, col=1)
                 fig.add_trace(go.Scatter(x=hist.index, y=ma20, name="MA20", line=dict(dash='dot')), row=1, col=1)
@@ -226,7 +230,7 @@ with tab2:
                 fig.update_layout(height=600, title_text=f"{target} 技術指標圖")
                 st.plotly_chart(fig, use_container_width=True)
                 
-                # 診斷逻辑
+                # 分析結論
                 last_rsi = rsi.iloc[-1]
                 if last_rsi > 70: advice = "⚠️ 市場過熱，建議分批獲利了結"
                 elif last_rsi < 30: advice = "✅ 超賣訊號，可考慮建立基本持股"
@@ -238,20 +242,4 @@ with tab2:
 # --- Tab 3: MPT 優化 ---
 with tab3:
     if not df_raw.empty and len(portfolio) >= 2:
-        if st.button("⚖️ 執行權重優化"):
-            hist_data = fetch_stock_data(portfolio["股票代號"].tolist(), "3y")
-            res = calculate_mpt_optimization(hist_data.pct_change())
-            if res:
-                total_val = portfolio["現值(TWD)"].sum()
-                curr_w = [portfolio[portfolio["股票代號"]==s]["現值(TWD)"].sum()/total_val for s in res['symbols']]
-                
-                res_df = pd.DataFrame({
-                    "標的": res['symbols'],
-                    "目前權重": [f"{w*100:.1f}%" for w in curr_w],
-                    "低波動建議 (穩健)": [f"{w*100:.1f}%" for w in res['min_vol_weights']],
-                    "高夏普建議 (績效)": [f"{w*100:.1f}%" for w in res['max_sharpe_weights']]
-                })
-                st.dataframe(res_df, use_container_width=True, hide_index=True)
-                st.info("💡 權重優化是基於過去 3 年的歷史報酬與波動度，預測未來僅供參考。")
-    else:
-        st.warning("執行 MPT 優化至少需要 2 個不同的投資標的。")
+        if st.button("⚖️
