@@ -20,6 +20,8 @@ st.title("📈 智能投資組合戰情室")
 
 def calculate_mpt_optimization(returns_df):
     """執行 MPT 優化計算：最小波動與最高夏普比率"""
+    # 確保資料全部為數值型態
+    returns_df = returns_df.astype(float)
     mean_returns = returns_df.mean() * 252
     cov_matrix = returns_df.cov() * 252
     num_assets = len(mean_returns)
@@ -47,6 +49,7 @@ def calculate_mpt_optimization(returns_df):
         return {
             "symbols": list(returns_df.columns),
             "mean_returns": mean_returns,
+            "cov_matrix": cov_matrix,
             "min_vol_weights": min_vol_res.x,
             "max_sharpe_weights": max_sharpe_res.x
         }
@@ -92,6 +95,7 @@ def get_current_prices(symbols):
     return prices
 
 def identify_currency(symbol):
+    # 判定台股或美股
     return "TWD" if (".TW" in symbol or ".TWO" in symbol) else "USD"
 
 # ==========================================
@@ -131,12 +135,16 @@ def display_stock_rows(df):
 
 def display_subtotal_row(df, label):
     """計算並顯示小計列"""
+    if df.empty: return
     t_cost = float(df["總投入成本(原幣)"].sum())
     t_val = float(df["現值(原幣)"].sum())
     t_prof = t_val - t_cost
     t_roi = (t_prof / t_cost * 100) if t_cost != 0 else 0
     color = "red" if t_prof > 0 else "green"
-    fmt = "{:,.0f}" if df["幣別"].iloc[0] == "TWD" else "{:,.2f}"
+    
+    # 根據該區塊的第一筆標的決定格式
+    currency = df["幣別"].iloc[0]
+    fmt = "{:,.0f}" if currency == "TWD" else "{:,.2f}"
 
     st.markdown("---")
     c1, c2, c3, c4, c5, c6, c7, c8, c9 = st.columns(COLS_RATIO)
@@ -154,6 +162,7 @@ def display_subtotal_row(df, label):
 tab1, tab2, tab3 = st.tabs(["📊 庫存配置", "🧠 AI 技術診斷", "⚖️ MPT 數學模擬"])
 df_raw = load_data()
 
+# 資料預處理
 if not df_raw.empty:
     usd_rate = get_exchange_rate()
     df_raw["單筆成本"] = df_raw["股數"] * df_raw["持有成本單價"]
@@ -169,14 +178,14 @@ if not df_raw.empty:
     portfolio["獲利率(%)"] = portfolio.apply(lambda r: (r["獲利(原幣)"]/r["總投入成本(原幣)"]*100) if r["總投入成本(原幣)"] != 0 else 0, axis=1)
     portfolio["現值(TWD)"] = portfolio.apply(lambda r: r["現值(原幣)"] * (usd_rate if r["幣別"]=="USD" else 1), axis=1)
 
-# --- Tab 1: 庫存配置與圖表 ---
+# --- Tab 1: 庫存與圓餅圖 ---
 with tab1:
     with st.sidebar:
         st.header("📝 新增投資")
         with st.form("add_form", clear_on_submit=True):
             s_in = st.text_input("股票代號 (如: 2330.TW, TSLA)", "").upper().strip()
-            q_in = st.number_input("股數", min_value=0.0, value=100.0)
-            c_in = st.number_input("買入單價", min_value=0.0, value=100.0)
+            q_in = st.number_input("股數", min_value=0.0, value=0.0)
+            c_in = st.number_input("買入單價", min_value=0.0, value=0.0)
             if st.form_submit_button("新增標的"):
                 if s_in and q_in > 0:
                     new_entry = pd.DataFrame([{"股票代號":s_in, "股數":q_in, "持有成本單價":c_in}])
@@ -185,52 +194,40 @@ with tab1:
     if df_raw.empty:
         st.info("尚未有持股資料。")
     else:
-        # A. 頂部看板
-        total_asset = float(portfolio['現值(TWD)'].sum())
-        st.metric("💰 總資產 (TWD)", f"${total_asset:,.0f}", help=f"匯率預設: {usd_rate}")
+        # A. 總看板
+        st.metric("💰 總資產 (TWD)", f"${float(portfolio['現值(TWD)'].sum()):,.0f}", help=f"當前匯率: {usd_rate}")
 
-        # B. 組合圓餅圖 (含下拉選單)
+        # B. 圓餅圖
         st.divider()
         st.subheader("📊 投資組合圓餅圖")
-        chart_view = st.selectbox("選擇圓餅圖顯示範圍", ["全部 (ALL)", "台股 (TW ONLY)", "美股 (US ONLY)"])
+        chart_view = st.selectbox("選擇圓餅圖範圍", ["全部資產", "僅限台股", "僅限美股"])
         
-        if chart_view == "台股 (TW ONLY)":
-            df_chart = portfolio[portfolio["幣別"]=="TWD"]
-        elif chart_view == "美股 (US ONLY)":
-            df_chart = portfolio[portfolio["幣別"]=="USD"]
-        else:
-            df_chart = portfolio
+        if chart_view == "僅限台股": df_plt = portfolio[portfolio["幣別"]=="TWD"]
+        elif chart_view == "僅限美股": df_plt = portfolio[portfolio["幣別"]=="USD"]
+        else: df_plt = portfolio
         
-        if not df_chart.empty:
-            fig_pie = px.pie(df_chart, values="現值(TWD)", names="股票代號", hole=0.4, 
-                             color_discrete_sequence=px.colors.qualitative.Pastel)
+        if not df_plt.empty:
+            fig_pie = px.pie(df_plt, values="現值(TWD)", names="股票代號", hole=0.4)
             fig_pie.update_traces(textinfo='percent+label')
             st.plotly_chart(fig_pie, use_container_width=True)
-        else:
-            st.warning("該類別尚無持股。")
 
-        # C. 區分台美股列表
-        st.divider()
+        # C. 分區列表
         df_tw = portfolio[portfolio["幣別"]=="TWD"]
         df_us = portfolio[portfolio["幣別"]=="USD"]
 
         if not df_tw.empty:
-            st.subheader("🇹🇼 台股資產明細")
-            display_headers()
-            display_stock_rows(df_tw)
-            display_subtotal_row(df_tw, "台股小計")
+            st.subheader("🇹🇼 台股明細")
+            display_headers(); display_stock_rows(df_tw); display_subtotal_row(df_tw, "台股小計")
 
         if not df_us.empty:
-            st.subheader("🇺🇸 美股資產明細")
-            display_headers()
-            display_stock_rows(df_us)
-            display_subtotal_row(df_us, "美股小計")
+            st.subheader("🇺🇸 美股明細")
+            display_headers(); display_stock_rows(df_us); display_subtotal_row(df_us, "美股小計")
 
-# --- Tab 3: MPT 數學模擬 ---
+# --- Tab 3: MPT 分析 ---
 with tab3:
     st.subheader("⚖️ MPT 權重優化與年化報酬預測")
     if not df_raw.empty and len(portfolio) >= 2:
-        if st.button("🚀 執行深度分析 (3Y 歷史資料)", type="primary"):
+        if st.button("🚀 執行深度分析", type="primary"):
             try:
                 syms = portfolio["股票代號"].tolist()
                 hist = yf.download(syms, period="3y", interval="1d")['Close'].ffill().dropna()
@@ -240,35 +237,48 @@ with tab3:
                 mpt = calculate_mpt_optimization(returns)
                 
                 if mpt:
-                    # 預算目前權重
+                    # 預算目前權重 (確保為 float)
                     total_twd = float(portfolio["現值(TWD)"].sum())
-                    curr_w = np.array([float(portfolio[portfolio["股票代號"]==s]["現值(TWD)"].sum()/total_twd) for s in mpt['symbols']])
-                    
-                    # 計算各配置的預期回報
-                    def get_exp_ret(w): return np.sum(mpt['mean_returns'] * w) * 100
-                    def get_exp_vol(w): return np.sqrt(np.dot(w.T, np.dot(returns.cov()*252, w))) * 100
+                    curr_w = []
+                    for s in mpt['symbols']:
+                        val = portfolio[portfolio["股票代號"]==s]["現值(TWD)"].sum()
+                        curr_w.append(float(val/total_twd))
+                    curr_w = np.array(curr_w)
 
+                    # 績效計算函數
+                    def get_perf(w):
+                        r = float(np.sum(mpt['mean_returns'] * w) * 100)
+                        v = float(np.sqrt(np.dot(w.T, np.dot(mpt['cov_matrix'], w))) * 100)
+                        return r, v
+
+                    r_now, v_now = get_perf(curr_w)
+                    r_min, v_min = get_perf(mpt['min_vol_weights'])
+                    r_max, v_max = get_perf(mpt['max_sharpe_weights'])
+
+                    st.markdown("### 1️⃣ 權重優化對比表")
                     res_df = pd.DataFrame({
                         "標的": mpt['symbols'],
-                        "目前佔比 (%)": curr_w * 100,
-                        "最小波動建議 (%)": mpt['min_vol_weights'] * 100,
-                        "最高夏普建議 (%)": mpt['max_sharpe_weights'] * 100
+                        "目前權重": curr_w * 100,
+                        "最小波動建議": mpt['min_vol_weights'] * 100,
+                        "最高夏普建議": mpt['max_sharpe_weights'] * 100
                     })
-                    
-                    st.markdown("### 1️⃣ 權重優化建議表")
-                    st.dataframe(res_df.style.format("{:.2f}%"), use_container_width=True, hide_index=True)
+                    st.dataframe(res_df.style.format({
+                        "目前權重": "{:.2f}%", "最小波動建議": "{:.2f}%", "最高夏普建議": "{:.2f}%"
+                    }), use_container_width=True, hide_index=True)
 
                     st.markdown("### 2️⃣ 預期績效比一比")
-                    perf_data = {
-                        "配置方案": ["目前配置", "最小波動方案", "最高夏普方案"],
-                        "預期年化報酬 (%)": [get_exp_ret(curr_w), get_exp_ret(mpt['min_vol_weights']), get_exp_ret(mpt['max_sharpe_weights'])],
-                        "預期年化波動 (%)": [get_exp_vol(curr_w), get_exp_vol(mpt['min_vol_weights']), get_exp_vol(mpt['max_sharpe_weights'])]
-                    }
-                    st.table(pd.DataFrame(perf_data).set_index("配置方案").style.format("{:.2f}%"))
-                    
+                    perf_table = pd.DataFrame({
+                        "方案": ["目前配置", "最小波動方案", "最高夏普方案"],
+                        "預期年化報酬": [r_now, r_min, r_max],
+                        "預期年化波動": [v_now, v_min, v_max]
+                    })
+                    st.table(perf_table.set_index("方案").style.format("{:.2f}%"))
+
                     
 
-                    st.markdown("### 3️⃣ 相關性熱圖")
+                    st.markdown("### 3️⃣ 風險分散度 (相關係數)")
                     st.plotly_chart(px.imshow(returns.corr(), text_auto=".2f", color_continuous_scale='RdBu_r'))
             except Exception as e:
-                st.error(f"分析出錯: {e}")
+                st.error(f"分析失敗: {e}")
+    else:
+        st.warning("請先新增至少 2 支標的。")
