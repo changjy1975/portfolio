@@ -15,7 +15,6 @@ import numpy as np
 # ==========================================
 st.set_page_config(page_title="Alan & Jenny 投資戰情室", layout="wide")
 
-# 確保 MPT 結果與排序狀態持久化
 if 'mpt_results' not in st.session_state: st.session_state.mpt_results = None
 if 'sort_col' not in st.session_state: st.session_state.sort_col = "獲利"
 if 'sort_asc' not in st.session_state: st.session_state.sort_asc = False
@@ -25,7 +24,7 @@ if not os.path.exists(BACKUP_DIR):
     os.makedirs(BACKUP_DIR)
 
 # ==========================================
-# 2. 核心功能函數 (資料處理與行情)
+# 2. 核心功能函數
 # ==========================================
 
 def load_data(user):
@@ -66,7 +65,6 @@ def identify_currency(symbol):
     return "TWD" if (".TW" in symbol or ".TWO" in symbol) else "USD"
 
 def calculate_remaining_loan(principal, annual_rate, years, months_passed):
-    """計算本利攤還後的剩餘本金"""
     if principal <= 0 or annual_rate <= 0 or years <= 0: return 0.0
     r = annual_rate / 12 / 100
     n = years * 12
@@ -91,53 +89,25 @@ def calculate_bb(series, window=20):
     return ma + (std * 2), ma, ma - (std * 2)
 
 # ==========================================
-# 3. MPT 數學模擬引擎 (修復並補齊邏輯)
+# 3. MPT 模擬引擎
 # ==========================================
 
 def perform_mpt_simulation(portfolio_df):
     symbols = portfolio_df["股票代號"].tolist()
-    if len(symbols) < 2: return None, "至少需要 2 支標的才能進行模擬。"
+    if len(symbols) < 2: return None, "標的不足。"
     try:
         data = yf.download(symbols, period="3y", interval="1d", auto_adjust=True)
-        if data.empty: return None, "無法獲取歷史數據。"
-        
-        # 處理 yfinance 回傳結構
-        close_prices = data['Close'] if len(symbols) > 1 else data['Close'].to_frame(name=symbols[0])
-        returns = close_prices.ffill().pct_change().dropna()
-        
-        mean_returns = returns.mean() * 252
-        cov_matrix = returns.cov() * 252
-        num_portfolios = 2000
-        results = np.zeros((3, num_portfolios))
-        weights_record = []
-        
-        for i in range(num_portfolios):
-            weights = np.random.random(len(symbols))
-            weights /= np.sum(weights)
-            weights_record.append(weights)
-            p_ret = np.sum(weights * mean_returns)
-            p_std = np.sqrt(np.dot(weights.T, np.dot(cov_matrix, weights)))
-            results[0,i] = p_ret
-            results[1,i] = p_std
-            results[2,i] = (p_ret - 0.02) / p_std # 無風險利率 2%
-            
-        max_idx = np.argmax(results[2]); min_idx = np.argmin(results[1])
-        curr_val = portfolio_df["現值_TWD"].values
-        curr_w = curr_val / np.sum(curr_val)
-        
-        comparison = pd.DataFrame({
-            "股票代號": symbols,
-            "目前權重 (%)": curr_w * 100,
-            "Max Sharpe 建議 (%)": weights_record[max_idx] * 100,
-            "Min Vol 建議 (%)": weights_record[min_idx] * 100
-        })
-        
-        return {
-            "sim_df": pd.DataFrame({'Return': results[0], 'Volatility': results[1], 'Sharpe': results[2]}),
-            "comparison": comparison,
-            "max_sharpe": (results[0, max_idx], results[1, max_idx]),
-            "corr": returns.corr()
-        }, None
+        close = data['Close'] if len(symbols) > 1 else data['Close'].to_frame(name=symbols[0])
+        rets = close.ffill().pct_change().dropna()
+        m_rets = rets.mean() * 252; c_mat = rets.cov() * 252
+        res = np.zeros((3, 2000)); w_rec = []
+        for i in range(2000):
+            w = np.random.random(len(symbols)); w /= np.sum(w); w_rec.append(w)
+            p_r = np.sum(w * m_rets); p_s = np.sqrt(np.dot(w.T, np.dot(c_mat, w)))
+            res[0,i] = p_r; res[1,i] = p_s; res[2,i] = (p_r - 0.02) / p_s
+        m_idx = np.argmax(res[2]); curr_w = portfolio_df["現值_TWD"].values / portfolio_df["現值_TWD"].sum()
+        comp = pd.DataFrame({"股票代號": symbols, "目前權重 (%)": curr_w * 100, "Max Sharpe 建議 (%)": w_rec[m_idx] * 100})
+        return {"sim_df": pd.DataFrame({'Return': res[0], 'Volatility': res[1], 'Sharpe': res[2]}), "comparison": comp, "max_sharpe": (res[0, m_idx], res[1, m_idx]), "corr": rets.corr()}, None
     except Exception as e: return None, str(e)
 
 # ==========================================
@@ -180,7 +150,7 @@ df_record = pd.concat([load_data("Alan"), load_data("Jenny")], ignore_index=True
 st.title(f"📈 {current_user} 投資戰情室")
 tab1, tab2, tab3, tab4 = st.tabs(["📊 庫存配置", "🧠 技術健診", "⚖️ 組合分析 (MPT)", "💰 資產負債表"])
 
-# --- 全域資料準備 ---
+# 全域數據準備
 usd_rate = get_exchange_rate()
 portfolio = pd.DataFrame()
 if not df_record.empty:
@@ -216,11 +186,11 @@ with tab2:
         if not df_t.empty:
             df_t['RSI'], (df_t['BU'], df_t['BM'], df_t['BL']), (df_t['M'], df_t['MS'], df_t['MH']) = calculate_rsi(df_t['Close']), calculate_bb(df_t['Close']), calculate_macd(df_t['Close'])
             f = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.7, 0.3])
-            f.add_trace(go.Scatter(x=df_t.index, y=df_t['Close'], name="價格"),1,1); f.add_trace(go.Scatter(x=df_t.index, y=df_t['BU'], name="布林上軌", line=dict(dash='dot')),1,1)
-            f.add_trace(go.Bar(x=df_t.index, y=df_t['MH'], name="MACD柱"),2,1); f.update_layout(height=500, template="plotly_dark"); st.plotly_chart(f, use_container_width=True)
+            f.add_trace(go.Scatter(x=df_t.index, y=df_t['Close'], name="價格"),1,1); f.add_trace(go.Scatter(x=df_t.index, y=df_t['BU'], name="上軌", line=dict(dash='dot')),1,1)
+            f.add_trace(go.Bar(x=df_t.index, y=df_t['MH'], name="MACD"),2,1); f.update_layout(height=500, template="plotly_dark"); st.plotly_chart(f, use_container_width=True)
 
 with tab3:
-    st.subheader("⚖️ 投資組合優化模擬 (MPT)")
+    st.subheader("⚖️ 投資組合優化 (MPT)")
     if portfolio.empty: st.info("請先新增持股。")
     else:
         if st.button("🚀 啟動模擬計算", type="primary"):
@@ -228,58 +198,78 @@ with tab3:
                 res, err = perform_mpt_simulation(portfolio)
                 if err: st.error(err)
                 else: st.session_state.mpt_results = res
-        
         if st.session_state.mpt_results:
             res = st.session_state.mpt_results
             sc1, sc2 = st.columns([2, 1])
             with sc1:
-                fig = px.scatter(res['sim_df'], x='Volatility', y='Return', color='Sharpe', title="效率前緣雲圖", labels={'Volatility':'年化波動','Return':'年化回報'})
+                fig = px.scatter(res['sim_df'], x='Volatility', y='Return', color='Sharpe', title="效率前緣雲圖")
                 fig.add_trace(go.Scatter(x=[res['max_sharpe'][1]], y=[res['max_sharpe'][0]], mode='markers', marker=dict(color='red', size=15, symbol='star'), name='Max Sharpe'))
                 st.plotly_chart(fig, use_container_width=True)
-            with sc2:
-                st.write("#### 建議權重對比")
-                st.dataframe(res['comparison'].set_index("股票代號").style.format("{:.2f}%"))
-            st.divider()
-            st.write("#### 資產相關性矩陣")
-            st.plotly_chart(px.imshow(res['corr'], text_auto=".2f", color_continuous_scale='RdBu_r'), use_container_width=True)
+            with sc2: st.dataframe(res['comparison'].set_index("股票代號").style.format("{:.2f}%"))
 
 with tab4:
     st.subheader("💰 家庭資產負債表")
     
-    # 1. 資產配置
+    # --- 1. 資產端 ---
     st.markdown("#### 1. 資產端")
     ic1, ic2 = st.columns(2)
-    with ic1: cash_res = st.number_input("💵 現金預留 (TWD)", min_value=0.0, value=500000.0, step=10000.0)
+    with ic1: cash_res = st.number_input("💵 現金預留 (TWD)", min_value=0.0, value=500000.0)
     with ic2:
         stock_val_twd = float(portfolio["現值_TWD"].sum()) if not portfolio.empty else 0.0
         st.info(f"股票現值 (自動導入): ${stock_val_twd:,.0f}")
 
-    # 2. 負債配置 (新增一筆貸款)
+    # --- 2. 貸款端 ---
     st.divider()
     st.markdown("#### 2. 負債端：貸款設定")
     lc1, lc2 = st.columns(2)
     with lc1:
         st.write("**第一筆貸款 (如房貸)**")
-        l1_p = st.number_input("🏦 原始本金 (L1)", value=3000000.0, key="l1_p")
-        l1_r = st.number_input("📈 年利率 (%) (L1)", value=2.65, key="l1_r")
-        l1_y = st.number_input("⏳ 期限 (年) (L1)", value=30, key="l1_y")
-        l1_m = st.number_input("📅 已還月數 (L1)", value=12, key="l1_m")
+        l1_p = st.number_input("🏦 原始本金 (L1)", value=3000000.0)
+        l1_r = st.number_input("📈 年利率 (%) (L1)", value=2.65)
+        l1_y = st.number_input("⏳ 期限 (年) (L1)", value=30)
+        l1_m = st.number_input("📅 已還月數 (L1)", value=12)
     with lc2:
         st.write("**第二筆貸款 (如信貸/二貸)**")
-        l2_p = st.number_input("🏦 原始本金 (L2)", value=0.0, key="l2_p")
-        l2_r = st.number_input("📈 年利率 (%) (L2)", value=3.5, key="l2_r")
-        l2_y = st.number_input("⏳ 期限 (年) (L2)", value=7, key="l2_y")
-        l2_m = st.number_input("📅 已還月數 (L2)", value=0, key="l2_m")
+        l2_p = st.number_input("🏦 原始本金 (L2)", value=0.0)
+        l2_r = st.number_input("📈 年利率 (%) (L2)", value=3.5)
+        l2_y = st.number_input("⏳ 期限 (年) (L2)", value=7)
+        l2_m = st.number_input("📅 已還月數 (L2)", value=0)
 
-    # 3. 槓桿監控
+    # --- 3. 股票質押監控 (更新：將維持率放在底下) ---
     st.divider()
     st.markdown("#### 3. 槓桿監控：股票質押")
     gc1, gc2 = st.columns(2)
     with gc1: pledge_loan = st.number_input("💸 質押借款總額 (TWD)", min_value=0.0, value=0.0)
-    with gc2: pledge_targets = st.multiselect("🎯 擔保標的", portfolio["股票代號"].tolist()) if not portfolio.empty else []
+    with gc2: pledge_targets = st.multiselect("🎯 選擇擔保標的", portfolio["股票代號"].tolist()) if not portfolio.empty else []
 
-    # 4. 財務摘要
+    # 計算維持率邏輯
+    m_ratio = 0.0
+    if pledge_loan > 0 and pledge_targets:
+        collateral_val = portfolio[portfolio["股票代號"].isin(pledge_targets)]["現值_TWD"].sum()
+        m_ratio = (collateral_val / pledge_loan * 100)
+        m_color = "normal" if m_ratio > 160 else "off" if m_ratio > 140 else "inverse"
+        
+        # 顯示區塊
+        st.markdown(f"**📉 目前質押監控指標**")
+        rc1, rc2 = st.columns([1, 2])
+        rc1.metric("🚨 即時維持率", f"{m_ratio:.2f}%", delta="門檻 130%", delta_color=m_color)
+        
+        if m_ratio < 140:
+            st.warning(f"⚠️ 維持率低於安全水位 (140%)！")
+        
+        # 斷頭價預估 (單一標的)
+        if len(pledge_targets) == 1:
+            target_stock = pledge_targets[0]
+            target_shares = portfolio[portfolio["股票代號"] == target_stock]["股數"].values[0]
+            # 斷頭價公式：維持率 130% 時的價格
+            liq_price = (1.3 * pledge_loan) / target_shares
+            st.error(f"🚩 **{target_stock} 斷頭警示價**：當股價跌破 **${liq_price:.2f}** 時維持率將低於 130%。")
+        elif len(pledge_targets) > 1:
+            st.caption("*(多標的擔保建議參考整體維持率)*")
+
+    # --- 4. 財務摘要 ---
     st.divider()
+    st.markdown("#### 4. 家庭資產負債摘要")
     rem_l1 = calculate_remaining_loan(l1_p, l1_r, l1_y, l1_m)
     rem_l2 = calculate_remaining_loan(l2_p, l2_r, l2_y, l2_m)
     total_assets = stock_val_twd + cash_res
@@ -291,16 +281,10 @@ with tab4:
     mc2.metric("📉 剩餘總負債", f"-${total_debts:,.0f}", delta=f"L1:${rem_l1:,.0f} | L2:${rem_l2:,.0f}", delta_color="inverse")
     mc3.metric("🏆 家庭淨資產 (Net Worth)", f"${net_worth:,.0f}")
 
-    # 質押維持率警示
-    if pledge_loan > 0 and pledge_targets:
-        collat_val = portfolio[portfolio["股票代號"].isin(pledge_targets)]["現值_TWD"].sum()
-        m_ratio = (collat_val / pledge_loan * 100)
-        st.warning(f"🚨 目前質押維持率：**{m_ratio:.2f}%** (門檻 130%)")
-        
-    st.write("#### 📊 資產與負債分佈")
-    chart_df = pd.DataFrame({
+    st.write("#### 📊 資產負債結構分析")
+    bal_df = pd.DataFrame({
         "項目": ["股票現值", "現金預留", "貸款 1 餘額", "貸款 2 餘額", "質押借款"],
         "金額": [stock_val_twd, cash_res, -rem_l1, -rem_l2, -pledge_loan],
         "類別": ["資產", "資產", "負債", "負債", "負債"]
     })
-    st.plotly_chart(px.bar(chart_df, x="項目", y="金額", color="類別", color_discrete_map={"資產":"#2ecc71","負債":"#e74c3c"}), use_container_width=True)
+    st.plotly_chart(px.bar(bal_df, x="項目", y="金額", color="類別", color_discrete_map={"資產":"#2ecc71","負債":"#e74c3c"}), use_container_width=True)
