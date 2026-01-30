@@ -61,20 +61,36 @@ def get_exchange_rate():
         rate = ticker.fast_info.last_price
         if rate is None or pd.isna(rate):
              rate = ticker.history(period="1d")['Close'].iloc[-1]
-        return rate
+        return float(rate)
     except: return 32.5
 
 @st.cache_data(ttl=600)
 def get_batch_prices(symbols):
-    """批次抓取最新報價，快取 10 分鐘"""
+    """批次抓取最新報價，並修復單一股票導致的 TypeError"""
     if not symbols: return {}
     try:
-        # 使用 yf.download 批次抓取所有代號的最新 1 分鐘資料
-        data = yf.download(symbols, period="1d", interval="1m", progress=False)['Close']
+        # 下載最新資料
+        data = yf.download(symbols, period="1d", interval="1m", progress=False)
+        if data.empty: return {}
+        
+        # 取得收盤價部分
+        close_data = data['Close']
+        prices = {}
+        
         if len(symbols) == 1:
-            return {symbols[0]: data.iloc[-1]}
-        return data.iloc[-1].to_dict()
-    except:
+            # 處理單一股票回傳為 Series 的情況
+            val = close_data.iloc[-1]
+            if isinstance(val, (pd.Series, np.ndarray)):
+                val = val[0]
+            prices[symbols[0]] = float(val)
+        else:
+            # 處理多支股票回傳為 DataFrame 的情況
+            last_row = close_data.iloc[-1]
+            for s in symbols:
+                prices[s] = float(last_row[s])
+        return prices
+    except Exception as e:
+        st.sidebar.warning(f"行情抓取中斷: {e}")
         return {}
 
 def identify_currency(symbol):
@@ -87,7 +103,7 @@ def calculate_rsi(series, period=14):
     gain = delta.where(delta > 0, 0)
     loss = -delta.where(delta < 0, 0)
     
-    # 使用指數移動平均 (EMA)
+    # 使用指數移動平均 (EMA)，com = period - 1
     avg_gain = gain.ewm(com=period - 1, min_periods=period).mean()
     avg_loss = loss.ewm(com=period - 1, min_periods=period).mean()
     
@@ -204,7 +220,7 @@ def display_subtotal_row(df, currency_type, usd_rate):
     st.markdown("<br>", unsafe_allow_html=True)
 
 # ==========================================
-# 5. 主程式邏輯與分頁
+# 5. 主程式邏輯
 # ==========================================
 
 if 'sort_col' not in st.session_state: st.session_state.sort_col = "獲利(原幣)"
@@ -225,6 +241,10 @@ with st.sidebar:
 
 # --- 全局資料準備 ---
 df_record = pd.concat([load_data("Alan"), load_data("Jenny")], ignore_index=True) if current_user == "All" else load_data(current_user)
+
+# 預設變數防呆
+t_val, t_prof, roi_pct, usd_rate = 0.0, 0.0, 0.0, 32.5
+portfolio = pd.DataFrame()
 
 if not df_record.empty:
     usd_rate = get_exchange_rate()
@@ -251,13 +271,18 @@ if not df_record.empty:
     portfolio["現值(TWD)"] = portfolio["現值(原幣)"] * portfolio["幣別"].apply(lambda x: 1 if x == "TWD" else usd_rate)
     portfolio["獲利(TWD)"] = portfolio["獲利(原幣)"] * portfolio["幣別"].apply(lambda x: 1 if x == "TWD" else usd_rate)
 
+    # 修復 TypeError: 確保計算結果為單一 float 數值
+    t_val = float(portfolio["現值(TWD)"].sum())
+    t_prof = float(portfolio["獲利(TWD)"].sum())
+    total_cost = t_val - t_prof
+    roi_pct = (t_prof / total_cost * 100) if total_cost != 0 else 0
+
 st.title(f"📈 {current_user} 投資組合戰情室")
 tab1, tab2, tab3 = st.tabs(["📊 庫存配置", "🧠 技術健診", "⚖️ 組合分析 (MPT)"])
 
 with tab1:
     if df_record.empty: st.info("尚無數據。")
     else:
-        # 頁面頂部功能列
         top_c1, top_c2 = st.columns([1, 4])
         with top_c1:
             if st.button("🔄 刷新最新報價", type="secondary"):
@@ -266,11 +291,10 @@ with tab1:
         with top_c2:
             st.caption(f"最後更新時間 (台北): {datetime.now(pytz.timezone('Asia/Taipei')).strftime('%Y-%m-%d %H:%M:%S')}")
 
-        t_val, t_prof = portfolio["現值(TWD)"].sum(), portfolio["獲利(TWD)"].sum()
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("💰 總資產 (TWD)", f"${t_val:,.0f}")
         c2.metric("📈 總獲利 (TWD)", f"${t_prof:,.0f}")
-        c3.metric("📊 總報酬率", f"{(t_prof/(t_val-t_prof)*100):.2f}%" if t_val!=t_prof else "0%")
+        c3.metric("📊 總報酬率", f"{roi_pct:.2f}%")
         c4.metric("💱 匯率", f"{usd_rate:.2f}")
         
         st.divider(); st.subheader("🎯 組合配置圖解")
@@ -288,7 +312,7 @@ with tab1:
                 st.subheader(l); display_headers(cur.lower(), current_user); display_stock_rows(sub, cur, current_user); display_subtotal_row(sub, cur, usd_rate)
 
 with tab2:
-    if df_record.empty: st.info("無數據。")
+    if df_record.empty or portfolio.empty: st.info("無數據。")
     else:
         target = st.selectbox("分析標的：", portfolio["股票代號"].tolist())
         res, err = analyze_stock_technical(target)
@@ -302,24 +326,17 @@ with tab2:
             st.line_chart(res['history_df']['Close'])
 
 with tab3:
-    if df_record.empty: st.info("無數據。")
+    if df_record.empty or portfolio.empty: st.info("無數據。")
     else:
         st.subheader("⚖️ 現代投資組合理論 (MPT) 模擬引擎")
-        st.markdown(r"目標：在給定風險下極大化回報，或在給定回報下極小化風險：$\min \sigma_p^2 = w^T \Sigma w$")
-        
         if st.button("🚀 啟動數學模擬器", type="primary"):
             with st.spinner("模擬 2000 種權重組合中..."):
                 data, err = perform_mpt_simulation(portfolio)
                 if err: st.error(err)
                 else:
-                    st.write("#### 1️⃣ 效率前緣雲圖 (Efficient Frontier)")
-                    fig = px.scatter(data['sim_df'], x='Volatility', y='Return', color='Sharpe', color_continuous_scale='Viridis', labels={'Volatility':'年化波動度','Return':'預期年化回報'})
+                    st.write("#### 1️⃣ 效率前緣雲圖")
+                    fig = px.scatter(data['sim_df'], x='Volatility', y='Return', color='Sharpe', color_continuous_scale='Viridis')
                     fig.add_trace(go.Scatter(x=[data['max_sharpe'][1]], y=[data['max_sharpe'][0]], mode='markers', marker=dict(color='red', size=12, symbol='star'), name='Max Sharpe'))
                     st.plotly_chart(fig, use_container_width=True)
-                    
-                    st.write("#### 2️⃣ 建議調整比例")
                     st.table(data['comparison'].set_index("股票代號").style.format("{:.2f}%"))
-                    st.info("💡 **Max Sharpe**：每單位風險帶來的超額回報最高；**Min Vol**：整體組合震盪幅度最小。")
-                    
-                    st.write("#### 3️⃣ 相關性矩陣 (Correlation Matrix)")
                     st.plotly_chart(px.imshow(data['corr'], text_auto=".2f", color_continuous_scale='RdBu_r', zmin=-1, zmax=1), use_container_width=True)
