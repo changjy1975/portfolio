@@ -23,7 +23,7 @@ if not os.path.exists(BACKUP_DIR):
 # ==========================================
 
 def manage_backups(user, max_backups=10):
-    """保持備份資料夾整潔，只留最新10份"""
+    """保持備份資料夾整潔"""
     backups = sorted([
         os.path.join(BACKUP_DIR, f) for f in os.listdir(BACKUP_DIR) 
         if f.startswith(f"backup_{user}_")
@@ -53,7 +53,9 @@ def remove_stock(symbol, user):
     df = df[df["股票代號"] != symbol]
     save_data(df, user)
 
+@st.cache_data(ttl=3600)
 def get_exchange_rate():
+    """快取匯率數據，每小時更新一次"""
     try:
         ticker = yf.Ticker("USDTWD=X")
         rate = ticker.fast_info.last_price
@@ -62,29 +64,34 @@ def get_exchange_rate():
         return rate
     except: return 32.5
 
-def get_current_prices(symbols):
+@st.cache_data(ttl=600)
+def get_batch_prices(symbols):
+    """批次抓取最新報價，快取 10 分鐘"""
     if not symbols: return {}
-    prices = {}
-    for s in symbols:
-        try:
-            t = yf.Ticker(s)
-            p = t.fast_info.last_price
-            if p is None or pd.isna(p):
-                hist = t.history(period="1d")
-                p = hist['Close'].iloc[-1] if not hist.empty else None
-            prices[s] = p
-        except: prices[s] = None
-    return prices
+    try:
+        # 使用 yf.download 批次抓取所有代號的最新 1 分鐘資料
+        data = yf.download(symbols, period="1d", interval="1m", progress=False)['Close']
+        if len(symbols) == 1:
+            return {symbols[0]: data.iloc[-1]}
+        return data.iloc[-1].to_dict()
+    except:
+        return {}
 
 def identify_currency(symbol):
     return "TWD" if (".TW" in symbol or ".TWO" in symbol) else "USD"
 
-# --- 技術分析邏輯 ---
+# --- 技術分析邏輯 (RSI 優化為 EMA) ---
 def calculate_rsi(series, period=14):
+    """精確化 RSI：改用 Wilder's Smoothing (EMA)"""
     delta = series.diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-    rs = gain / loss
+    gain = delta.where(delta > 0, 0)
+    loss = -delta.where(delta < 0, 0)
+    
+    # 使用指數移動平均 (EMA)
+    avg_gain = gain.ewm(com=period - 1, min_periods=period).mean()
+    avg_loss = loss.ewm(com=period - 1, min_periods=period).mean()
+    
+    rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
 def analyze_stock_technical(symbol):
@@ -200,7 +207,6 @@ def display_subtotal_row(df, currency_type, usd_rate):
 # 5. 主程式邏輯與分頁
 # ==========================================
 
-# 初始化 session_state
 if 'sort_col' not in st.session_state: st.session_state.sort_col = "獲利(原幣)"
 if 'sort_asc' not in st.session_state: st.session_state.sort_asc = False
 
@@ -223,13 +229,21 @@ df_record = pd.concat([load_data("Alan"), load_data("Jenny")], ignore_index=True
 if not df_record.empty:
     usd_rate = get_exchange_rate()
     df_record['幣別'] = df_record['股票代號'].apply(identify_currency)
-    def w_avg(g):
-        t_q = g['股數'].sum()
-        avg_c = (g['股數'] * g['持有成本單價']).sum() / t_q if t_q > 0 else 0
-        return pd.Series({'股數': t_q, '平均持有單價': avg_c})
-    portfolio = df_record.groupby(["股票代號", "幣別"]).apply(w_avg, include_groups=False).reset_index()
-    portfolio["最新股價"] = portfolio["股票代號"].map(get_current_prices(portfolio["股票代號"].tolist()))
+    
+    # 彙整投資組合
+    portfolio = df_record.groupby(["股票代號", "幣別"]).apply(
+        lambda g: pd.Series({
+            '股數': g['股數'].sum(), 
+            '平均持有單價': (g['股數'] * g['持有成本單價']).sum() / g['股數'].sum()
+        }), include_groups=False
+    ).reset_index()
+    
+    # 批次更新價格
+    price_map = get_batch_prices(portfolio["股票代號"].tolist())
+    portfolio["最新股價"] = portfolio["股票代號"].map(price_map)
     portfolio = portfolio.dropna(subset=["最新股價"])
+    
+    # 獲利計算
     portfolio["總投入成本(原幣)"] = portfolio["股數"] * portfolio["平均持有單價"]
     portfolio["現值(原幣)"] = portfolio["股數"] * portfolio["最新股價"]
     portfolio["獲利(原幣)"] = portfolio["現值(原幣)"] - portfolio["總投入成本(原幣)"]
@@ -243,9 +257,21 @@ tab1, tab2, tab3 = st.tabs(["📊 庫存配置", "🧠 技術健診", "⚖️ �
 with tab1:
     if df_record.empty: st.info("尚無數據。")
     else:
+        # 頁面頂部功能列
+        top_c1, top_c2 = st.columns([1, 4])
+        with top_c1:
+            if st.button("🔄 刷新最新報價", type="secondary"):
+                st.cache_data.clear()
+                st.rerun()
+        with top_c2:
+            st.caption(f"最後更新時間 (台北): {datetime.now(pytz.timezone('Asia/Taipei')).strftime('%Y-%m-%d %H:%M:%S')}")
+
         t_val, t_prof = portfolio["現值(TWD)"].sum(), portfolio["獲利(TWD)"].sum()
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("💰 總資產 (TWD)", f"${t_val:,.0f}"); c2.metric("📈 總獲利 (TWD)", f"${t_prof:,.0f}"); c3.metric("📊 總報酬率", f"{(t_prof/(t_val-t_prof)*100):.2f}%" if t_val!=t_prof else "0%"); c4.metric("💱 匯率", f"{usd_rate:.2f}")
+        c1.metric("💰 總資產 (TWD)", f"${t_val:,.0f}")
+        c2.metric("📈 總獲利 (TWD)", f"${t_prof:,.0f}")
+        c3.metric("📊 總報酬率", f"{(t_prof/(t_val-t_prof)*100):.2f}%" if t_val!=t_prof else "0%")
+        c4.metric("💱 匯率", f"{usd_rate:.2f}")
         
         st.divider(); st.subheader("🎯 組合配置圖解")
         cc1, cc2 = st.columns(2)
@@ -269,26 +295,31 @@ with tab2:
         if err: st.error(err)
         else:
             c1, c2, c3 = st.columns(3)
-            c1.metric("現價", f"{res['current_price']:.2f}"); c2.metric("RSI", f"{res['rsi']:.1f}"); c3.write(f"趨勢: {res['trend']}")
-            st.success(f"建議：{res['advice']}"); st.line_chart(res['history_df']['Close'])
+            c1.metric("現價", f"{res['current_price']:.2f}")
+            c2.metric("RSI (EMA)", f"{res['rsi']:.1f}")
+            c3.write(f"趨勢: {res['trend']}")
+            st.success(f"建議：{res['advice']}")
+            st.line_chart(res['history_df']['Close'])
 
 with tab3:
     if df_record.empty: st.info("無數據。")
     else:
         st.subheader("⚖️ 現代投資組合理論 (MPT) 模擬引擎")
+        st.markdown(r"目標：在給定風險下極大化回報，或在給定回報下極小化風險：$\min \sigma_p^2 = w^T \Sigma w$")
+        
         if st.button("🚀 啟動數學模擬器", type="primary"):
             with st.spinner("模擬 2000 種權重組合中..."):
                 data, err = perform_mpt_simulation(portfolio)
                 if err: st.error(err)
                 else:
-                    st.write("#### 1️⃣ 效率前緣雲圖")
-                    fig = px.scatter(data['sim_df'], x='Volatility', y='Return', color='Sharpe', color_continuous_scale='Viridis')
+                    st.write("#### 1️⃣ 效率前緣雲圖 (Efficient Frontier)")
+                    fig = px.scatter(data['sim_df'], x='Volatility', y='Return', color='Sharpe', color_continuous_scale='Viridis', labels={'Volatility':'年化波動度','Return':'預期年化回報'})
                     fig.add_trace(go.Scatter(x=[data['max_sharpe'][1]], y=[data['max_sharpe'][0]], mode='markers', marker=dict(color='red', size=12, symbol='star'), name='Max Sharpe'))
                     st.plotly_chart(fig, use_container_width=True)
                     
                     st.write("#### 2️⃣ 建議調整比例")
                     st.table(data['comparison'].set_index("股票代號").style.format("{:.2f}%"))
-                    st.info("💡 回報最高 (Max Sharpe)：最佳性價比；波動最低 (Min Vol)：最平穩。")
+                    st.info("💡 **Max Sharpe**：每單位風險帶來的超額回報最高；**Min Vol**：整體組合震盪幅度最小。")
                     
-                    st.write("#### 3️⃣ 相關性矩陣")
+                    st.write("#### 3️⃣ 相關性矩陣 (Correlation Matrix)")
                     st.plotly_chart(px.imshow(data['corr'], text_auto=".2f", color_continuous_scale='RdBu_r', zmin=-1, zmax=1), use_container_width=True)
