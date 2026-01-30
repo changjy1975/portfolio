@@ -24,7 +24,7 @@ if not os.path.exists(BACKUP_DIR):
     os.makedirs(BACKUP_DIR)
 
 # ==========================================
-# 2. 核心功能函數 (資料處理、行情與財務計算)
+# 2. 核心功能函數
 # ==========================================
 
 def load_data(user):
@@ -65,7 +65,7 @@ def identify_currency(symbol):
     return "TWD" if (".TW" in symbol or ".TWO" in symbol) else "USD"
 
 def calculate_remaining_principal(principal, annual_rate, years, months_passed):
-    """計算本利攤還後的房貸剩餘本金"""
+    """計算房貸剩餘本金公式"""
     if principal <= 0 or annual_rate <= 0 or years <= 0: return 0.0
     r = annual_rate / 12 / 100
     n = years * 12
@@ -90,7 +90,7 @@ def calculate_bb(series, window=20):
     return ma + (std * 2), ma, ma - (std * 2)
 
 # ==========================================
-# 3. 介面組件
+# 3. 介面表格組件
 # ==========================================
 COLS_RATIO = [1.2, 0.8, 1, 1, 1.2, 1.2, 1.2, 1, 0.6]
 
@@ -111,7 +111,7 @@ def display_market_table(df, title, currency, usd_rate, current_user):
         if r[8].button("🗑️", key=f"del_{row['股票代號']}_{current_user}"): save_data(load_data(current_user)[lambda x: x["股票代號"] != row['股票代號']], current_user); st.rerun()
 
 # ==========================================
-# 4. 主程式
+# 4. 主程式邏輯
 # ==========================================
 
 with st.sidebar:
@@ -129,7 +129,7 @@ df_record = pd.concat([load_data("Alan"), load_data("Jenny")], ignore_index=True
 st.title(f"📈 {current_user} 投資戰情室")
 tab1, tab2, tab3, tab4 = st.tabs(["📊 庫存配置", "🧠 技術健診", "⚖️ 組合分析 (MPT)", "💰 資產負債表"])
 
-# 全域數據準備
+# --- 資料預處理 ---
 usd_rate = get_exchange_rate()
 portfolio = pd.DataFrame()
 if not df_record.empty:
@@ -144,9 +144,9 @@ if not df_record.empty:
     portfolio["現值_TWD"] = portfolio.apply(lambda r: r["現值"] * (usd_rate if r["幣別"]=="USD" else 1), axis=1)
 
 with tab1:
-    if df_record.empty: st.info("尚無持股。")
+    if df_record.empty: st.info("尚無持股數據。")
     else:
-        if st.button("🔄 刷新報價"): st.cache_data.clear(); st.rerun()
+        if st.button("🔄 刷新最新報價"): st.cache_data.clear(); st.rerun()
         t_val = float(portfolio["現值_TWD"].sum())
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("💰 總資產 (TWD)", f"${t_val:,.0f}"); c4.metric("💱 匯率", f"{usd_rate:.2f}")
@@ -158,88 +158,115 @@ with tab1:
         if not us_df.empty: display_market_table(us_df, "🇺🇸 美股庫存", "USD", usd_rate, current_user)
 
 with tab2:
-    if portfolio.empty: st.info("尚無持股。")
+    if portfolio.empty: st.info("尚無數據。")
     else:
-        target = st.selectbox("標的", portfolio["股票代號"].tolist())
+        target = st.selectbox("分析標的", portfolio["股票代號"].tolist())
         df_t = yf.Ticker(target).history(period="1y")
         if not df_t.empty:
             df_t['RSI'], (df_t['BU'], df_t['BM'], df_t['BL']), (df_t['M'], df_t['MS'], df_t['MH']) = calculate_rsi(df_t['Close']), calculate_bb(df_t['Close']), calculate_macd(df_t['Close'])
             f = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.7, 0.3])
-            f.add_trace(go.Scatter(x=df_t.index, y=df_t['Close'], name="價"),1,1); f.add_trace(go.Scatter(x=df_t.index, y=df_t['BU'], name="上軌", line=dict(dash='dot')),1,1)
-            f.add_trace(go.Bar(x=df_t.index, y=df_t['MH'], name="MACD"),2,1); f.update_layout(height=500, template="plotly_dark"); st.plotly_chart(f, use_container_width=True)
-
-with tab3:
-    st.info("MPT 模擬器可在此擴展。")
+            f.add_trace(go.Scatter(x=df_t.index, y=df_t['Close'], name="價格"),1,1); f.add_trace(go.Scatter(x=df_t.index, y=df_t['BU'], name="布林上軌", line=dict(dash='dot')),1,1)
+            f.add_trace(go.Bar(x=df_t.index, y=df_t['MH'], name="MACD柱"),2,1); f.update_layout(height=500, template="plotly_dark"); st.plotly_chart(f, use_container_width=True)
 
 with tab4:
-    st.subheader("💰 家庭資產負債表 (含股票質押監控)")
+    st.subheader("💰 家庭資產負債表 (淨資產監控)")
     
-    # --- 1. 現金與負債輸入 ---
-    st.markdown("#### 1. 財務參數")
+    # --- 1. 現金與概覽 ---
+    st.markdown("#### 1. 資產端")
     ic1, ic2 = st.columns(2)
     with ic1:
-        cash_res = st.number_input("💵 現金預留 (TWD)", min_value=0.0, value=500000.0)
+        cash_res = st.number_input("💵 現金預留 (TWD)", min_value=0.0, value=500000.0, step=10000.0)
     with ic2:
-        st.caption(f"股票現值 (自動導入): ${portfolio['現值_TWD'].sum():,.0f}") if not portfolio.empty else st.write("請先新增持股")
+        # 修正錯誤：使用正確的 if-else 結構
+        if not portfolio.empty:
+            st.caption(f"股票現值 (自動導入): ${portfolio['現值_TWD'].sum():,.0f}")
+        else:
+            st.write("請先在庫存分頁新增持股")
 
     st.divider()
+    
+    # --- 2. 負債端：房貸／信貸 ---
+    st.markdown("#### 2. 負債端：房貸與一般借貸")
     dc1, dc2, dc3, dc4 = st.columns(4)
     with dc1:
-        l_p = st.number_input("🏦 房貸原始本金", value=3000000.0)
+        l_p = st.number_input("🏦 貸款原始本金", value=3000000.0) # 預設 300 萬
     with dc2:
-        l_r = st.number_input("📈 房貸利率 (%)", value=2.65)
+        l_r = st.number_input("📈 貸款年利率 (%)", value=2.65) # 預設 2.65%
     with dc3:
-        l_y = st.number_input("⏳ 期限 (年)", value=30)
+        l_y = st.number_input("⏳ 貸款期限 (年)", value=30)
     with dc4:
-        m_p = st.number_input("📅 已還月數", value=12)
+        m_p = st.number_input("📅 已還款月數", value=12)
 
-    # --- 2. 股票質押監控 (Leverage) ---
+    # --- 3. 槓桿端：股票質押監控 ---
     st.divider()
-    st.markdown("#### 2. 股票質押風險監控")
-    lc1, lc2, lc3 = st.columns(3)
+    st.markdown("#### 3. 槓桿監控：股票質押 (Stock Pledging)")
+    lc1, lc2, lc3 = st.columns([1.5, 2, 1])
     with lc1:
         pledge_loan = st.number_input("💸 質押借款總額 (TWD)", min_value=0.0, value=0.0, step=10000.0)
     with lc2:
-        # 選取質押標的 (從庫存選)
-        pledge_target = st.multiselect("🎯 質押擔保標的", portfolio["股票代號"].tolist()) if not portfolio.empty else []
+        # 選取擔保品標的
+        pledge_target = st.multiselect("🎯 選擇質押擔保標的", portfolio["股票代號"].tolist()) if not portfolio.empty else []
     with lc3:
-        st.caption("標準維持率門檻: 130%")
+        st.info("💡 質押維持率門檻：130%")
 
-    # --- 3. 財務計算與報告 ---
+    # --- 4. 財務結算報告 ---
     st.divider()
-    st.markdown("#### 3. 家庭淨資產報告")
+    st.markdown("#### 4. 家庭財務診斷報告")
     
-    # 房貸與質押計算
+    # 計算房貸剩餘
     rem_mortgage = calculate_remaining_principal(l_p, l_r, l_y, m_p)
+    # 總負債 = 房貸剩餘 + 質押借款
     total_debt = rem_mortgage + pledge_loan
-    total_assets = float(portfolio["現值_TWD"].sum()) + cash_res
+    # 總資產 = 股票現值 + 現金
+    stock_value_twd = float(portfolio["現值_TWD"].sum()) if not portfolio.empty else 0.0
+    total_assets = stock_value_twd + cash_res
+    # 淨資產
     net_worth = total_assets - total_debt
     
     # 質押維持率計算
     collateral_val = portfolio[portfolio["股票代號"].isin(pledge_target)]["現值_TWD"].sum()
     m_ratio = (collateral_val / pledge_loan * 100) if pledge_loan > 0 else 0
     
-    # 顯示 Metrics
+    # 呈現看板
     mc1, mc2, mc3, mc4 = st.columns(4)
-    mc1.metric("💼 總資產估值", f"${total_assets:,.0f}")
-    mc2.metric("📉 剩餘總負債", f"-${total_debt:,.0f}", delta=f"質押: ${pledge_loan:,.0f}")
+    mc1.metric("💼 家庭總資產", f"${total_assets:,.0f}")
+    mc2.metric("📉 剩餘總負債", f"-${total_debt:,.0f}", delta=f"含質押:${pledge_loan:,.0f}")
     mc3.metric("🏆 家庭淨資產", f"${net_worth:,.0f}")
     
+    # 質押警示指標
     if pledge_loan > 0:
-        color = "normal" if m_ratio > 160 else "off" if m_ratio > 140 else "inverse"
-        mc4.metric("🚨 質押維持率", f"{m_ratio:.1f}%", delta=f"門檻 130%", delta_color=color)
-        if m_ratio < 140:
-            st.warning(f"⚠️ 維持率低於安全水位 (140%)！")
+        # 維持率顏色邏輯
+        m_color = "normal" if m_ratio > 160 else "off" if m_ratio > 140 else "inverse"
+        mc4.metric("🚨 質押維持率", f"{m_ratio:.1f}%", delta="門檻 130%", delta_color=m_color)
         
-        # 斷頭價試算 (假設只有單一標的質押比較好算)
+        # 斷頭價格試算
         if len(pledge_target) == 1:
             target_stock = pledge_target[0]
-            shares = portfolio[portfolio["股票代號"] == target_stock]["股數"].values[0]
-            liq_price = (1.3 * pledge_loan) / shares
-            st.error(f"⚠️ {target_stock} 斷頭價預估: **${liq_price:.2f}** (維持率 130% 時)")
+            target_shares = portfolio[portfolio["股票代號"] == target_stock]["股數"].values[0]
+            # 斷頭價公式：維持率 130% 時的股價
+            liq_price = (1.3 * pledge_loan) / target_shares
+            st.error(f"🚩 **{target_stock} 斷頭警示價預估**： 當股價跌破 **${liq_price:.2f}** 時，維持率將低於 130%。")
+        elif len(pledge_target) > 1:
+            st.warning("⚠️ 多標的質押暫不支持精確斷頭價試算，請參考整體維持率。")
+    else:
+        mc4.metric("🚨 質押維持率", "N/A")
 
-    # 4. 保障分析
+    # --- 5. 保險與對沖分析 ---
     st.divider()
-    st.write("#### 🛡️ 風險保障分析 (房貸壽險對沖)")
-    st.write("根據您的遞減型壽險配置：")
-    st.success(f"目前保險需覆蓋的房貸缺口為：**${rem_mortgage:,.0f}**。")
+    st.write("#### 🛡️ 風險防護：遞減型房貸壽險對沖")
+    st.write("您已投保遞減型房貸壽險。")
+    
+    # 視覺化房貸對沖圖
+    st.success(f"目前剩餘房貸：**${rem_mortgage:,.0f}**。")
+    st.info(f"💡 您的壽險保額應隨此金額逐月遞減，目前風險覆蓋金額需大於 **${rem_mortgage:,.0f}**。")
+    
+    # 淨資產組成圓餅圖
+    st.write("#### 📊 資產負債結構")
+    bal_df = pd.DataFrame({
+        "項目": ["股票現值", "現金預留", "剩餘房貸", "質押借款"],
+        "金額": [stock_value_twd, cash_res, -rem_mortgage, -pledge_loan],
+        "類別": ["資產", "資產", "負債", "負債"]
+    })
+    st.plotly_chart(px.bar(bal_df, x="項目", y="金額", color="類別", 
+                           color_discrete_map={"資產": "#2ecc71", "負債": "#e74c3c"},
+                           title="家庭資產負債結構對比圖"), use_container_width=True)
