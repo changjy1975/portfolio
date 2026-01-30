@@ -42,7 +42,6 @@ def get_exchange_rate():
 
 @st.cache_data(ttl=300)
 def get_latest_quotes(symbols):
-    """跨市場批次抓取最後成交價 (解決台美股時差導致消失的問題)"""
     if not symbols: return {}
     quotes = {}
     try:
@@ -61,7 +60,6 @@ def identify_currency(symbol):
     return "TWD" if (".TW" in symbol or ".TWO" in symbol) else "USD"
 
 def calculate_rsi(series, period=14):
-    """精確化 RSI (使用 EMA)"""
     delta = series.diff()
     gain = delta.where(delta > 0, 0)
     loss = -delta.where(delta < 0, 0)
@@ -112,38 +110,79 @@ def perform_mpt_simulation(portfolio_df):
     except Exception as e: return None, str(e)
 
 # ==========================================
-# 4. 介面顯示組件 (表格與小計)
+# 4. 介面顯示組件 (具備排序功能)
 # ==========================================
 COLS_RATIO = [1.2, 0.8, 1, 1, 1.2, 1.2, 1.2, 1, 0.6]
 
 def display_market_table(df, title, currency, usd_rate, current_user):
     st.subheader(title)
-    cols = st.columns(COLS_RATIO)
-    for col, h in zip(cols, ["代號", "股數", "均價", "現價", "總成本", "現值", "獲利", "報酬率", "管理"]):
-        col.caption(f"**{h}**")
     
-    for _, row in df.iterrows():
+    # 排序對應表
+    header_map = [
+        ("代號", "股票代號"), ("股數", "股數"), ("均價", "平均持有單價"),
+        ("現價", "最新股價"), ("總成本", "總投入成本"), ("現值", "現值"),
+        ("獲利", "獲利"), ("報酬率", "獲利率(%)")
+    ]
+
+    # 繪製表頭排序按鈕
+    h_cols = st.columns(COLS_RATIO)
+    for i, (label, col_name) in enumerate(header_map):
+        arrow = " ▲" if st.session_state.sort_col == col_name and st.session_state.sort_asc else " ▼" if st.session_state.sort_col == col_name else ""
+        if h_cols[i].button(f"{label}{arrow}", key=f"h_{currency}_{col_name}_{current_user}"):
+            if st.session_state.sort_col == col_name:
+                st.session_state.sort_asc = not st.session_state.sort_asc
+            else:
+                st.session_state.sort_col = col_name
+                st.session_state.sort_asc = False
+            st.rerun()
+    h_cols[8].write("**管理**")
+
+    # 執行數據排序
+    df_sorted = df.sort_values(by=st.session_state.sort_col, ascending=st.session_state.sort_asc)
+    
+    # 數據列顯示
+    for _, row in df_sorted.iterrows():
         r = st.columns(COLS_RATIO)
         fmt = "{:,.0f}" if currency == "TWD" else "{:,.2f}"
         color = "red" if row["獲利"] > 0 else "green"
-        r[0].write(f"**{row['股票代號']}**"); r[1].write(f"{row['股數']:.2f}"); r[2].write(f"{row['平均持有單價']:.2f}"); r[3].write(f"{row['最新股價']:.2f}"); r[4].write(fmt.format(row['總投入成本'])); r[5].write(fmt.format(row['現值'])); r[6].markdown(f":{color}[{fmt.format(row['獲利'])}]"); r[7].markdown(f":{color}[{row['獲利率(%)']:.2f}%]")
+        r[0].write(f"**{row['股票代號']}**")
+        r[1].write(f"{row['股數']:.2f}")
+        r[2].write(f"{row['平均持有單價']:.2f}")
+        r[3].write(f"{row['最新股價']:.2f}")
+        r[4].write(fmt.format(row['總投入成本']))
+        r[5].write(fmt.format(row['現值']))
+        r[6].markdown(f":{color}[{fmt.format(row['獲利'])}]")
+        r[7].markdown(f":{color}[{row['獲利率(%)']:.2f}%]")
         if r[8].button("🗑️", key=f"del_{row['股票代號']}_{current_user}"):
             full = load_data(current_user)
-            save_data(full[full["股票代號"] != row['股票代號']], current_user); st.rerun()
+            save_data(full[full["股票代號"] != row['股票代號']], current_user)
+            st.rerun()
 
-    # 小計
+    # 市場小計
     s_cost, s_val, s_profit = df["總投入成本"].sum(), df["現值"].sum(), df["獲利"].sum()
     s_roi = (s_profit / s_cost * 100) if s_cost != 0 else 0
     st.markdown("---")
     sc = st.columns(COLS_RATIO)
-    sc[0].markdown(f"**{currency} 小計**"); sc[4].markdown(f"**{fmt.format(s_cost)}**"); sc[5].markdown(f"**{fmt.format(s_val)}**"); sc[6].markdown(f":{'red' if s_profit>0 else 'green'}[**{fmt.format(s_profit)}**]"); sc[7].markdown(f":{'red' if s_profit>0 else 'green'}[**{s_roi:.2f}%**]")
+    sc[0].markdown(f"**{currency} 小計**")
+    sc[4].markdown(f"**{fmt.format(s_cost)}**")
+    sc[5].markdown(f"**{fmt.format(s_val)}**")
+    sc[6].markdown(f":{'red' if s_profit>0 else 'green'}[**{fmt.format(s_profit)}**]")
+    sc[7].markdown(f":{'red' if s_profit>0 else 'green'}[**{s_roi:.2f}%**]")
     if currency == "USD":
-        sc2 = st.columns(COLS_RATIO); sc2[0].caption("*(換算台幣)*"); sc2[4].caption(f"${(s_cost*usd_rate):,.0f}"); sc2[5].caption(f"${(s_val*usd_rate):,.0f}"); sc2[6].caption(f"${(s_profit*usd_rate):,.0f}")
+        sc2 = st.columns(COLS_RATIO)
+        sc2[0].caption("*(換算台幣)*")
+        sc2[4].caption(f"${(s_cost*usd_rate):,.0f}")
+        sc2[5].caption(f"${(s_val*usd_rate):,.0f}")
+        sc2[6].caption(f"${(s_profit*usd_rate):,.0f}")
     st.write("")
 
 # ==========================================
 # 5. 主程式邏輯
 # ==========================================
+
+# 初始化排序狀態
+if 'sort_col' not in st.session_state: st.session_state.sort_col = "獲利"
+if 'sort_asc' not in st.session_state: st.session_state.sort_asc = False
 
 with st.sidebar:
     st.title("👨‍👩‍👧 帳戶管理")
@@ -152,7 +191,8 @@ with st.sidebar:
         with st.form("add_form", clear_on_submit=True):
             st.subheader("📝 新增持股")
             s_in = st.text_input("代號 (如 2330.TW 或 NVDA)").upper().strip()
-            q_in = st.number_input("股數", min_value=0.0, step=1.0); c_in = st.number_input("成本", min_value=0.0, step=0.1)
+            q_in = st.number_input("股數", min_value=0.0, step=1.0)
+            c_in = st.number_input("成本", min_value=0.0, step=0.1)
             if st.form_submit_button("執行新增"):
                 if s_in:
                     df = load_data(current_user)
@@ -193,11 +233,14 @@ if not df_record.empty:
         t_val = float(portfolio["現值_TWD"].sum()); t_prof = float(portfolio["獲利_TWD"].sum())
         roi = (t_prof / (t_val - t_prof) * 100) if (t_val - t_prof) != 0 else 0
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("💰 總資產 (TWD)", f"${t_val:,.0f}"); c2.metric("📈 總獲利 (TWD)", f"${t_prof:,.0f}"); c3.metric("📊 總報酬率", f"{roi:.2f}%"); c4.metric("💱 匯率", f"{usd_rate:.2f}")
+        c1.metric("💰 總資產 (TWD)", f"${t_val:,.0f}")
+        c2.metric("📈 總獲利 (TWD)", f"${t_prof:,.0f}")
+        c3.metric("📊 總報酬率", f"{roi:.2f}%")
+        c4.metric("💱 匯率", f"{usd_rate:.2f}")
 
         st.divider()
         
-        # B. 圓餅圖區塊 (移至上方)
+        # B. 圓餅圖區塊 (上方)
         st.subheader("🎯 投資組合配置分析")
         pc1, pc2 = st.columns(2)
         with pc1:
@@ -207,7 +250,7 @@ if not df_record.empty:
 
         st.divider()
 
-        # C. 庫存狀況區塊 (移至下方)
+        # C. 庫存狀況區塊 (下方，具備排序功能)
         tw_df = portfolio[portfolio["幣別"] == "TWD"]
         if not tw_df.empty: display_market_table(tw_df, "🇹🇼 台股庫存明細", "TWD", usd_rate, current_user)
         
@@ -219,7 +262,8 @@ if not df_record.empty:
         hist = yf.Ticker(target).history(period="1y")
         if not hist.empty:
             rsi = calculate_rsi(hist['Close']).iloc[-1]
-            st.metric(f"{target} RSI (14D)", f"{rsi:.2f}"); st.line_chart(hist['Close'])
+            st.metric(f"{target} RSI (14D)", f"{rsi:.2f}")
+            st.line_chart(hist['Close'])
 
     with tab3:
         st.subheader("⚖️ MPT 組合優化模擬")
