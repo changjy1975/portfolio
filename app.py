@@ -72,12 +72,12 @@ def calculate_remaining_loan(principal, annual_rate, years, months_passed):
     remaining = principal * ((1 + r)**n - (1 + r)**months_passed) / ((1 + r)**n - 1)
     return float(remaining)
 
-# --- 技術指標 ---
+# --- 技術指標計算 ---
 def calculate_rsi(series, period=14):
     delta = series.diff(); gain = delta.where(delta > 0, 0); loss = -delta.where(delta < 0, 0)
     avg_gain = gain.ewm(com=period - 1, min_periods=period).mean()
     avg_loss = loss.ewm(com=period - 1, min_periods=period).mean()
-    return 100 - (100 / (1 + avg_gain / avg_loss))
+    return 100 - (100 / (1 + avg_gain / (avg_loss + 1e-9)))
 
 def calculate_macd(series):
     exp1 = series.ewm(span=12, adjust=False).mean(); exp2 = series.ewm(span=26, adjust=False).mean()
@@ -89,29 +89,7 @@ def calculate_bb(series, window=20):
     return ma + (std * 2), ma, ma - (std * 2)
 
 # ==========================================
-# 3. MPT 模擬引擎
-# ==========================================
-
-def perform_mpt_simulation(portfolio_df):
-    symbols = portfolio_df["股票代號"].tolist()
-    if len(symbols) < 2: return None, "標的不足。"
-    try:
-        data = yf.download(symbols, period="3y", interval="1d", auto_adjust=True)
-        close = data['Close'] if len(symbols) > 1 else data['Close'].to_frame(name=symbols[0])
-        rets = close.ffill().pct_change().dropna()
-        m_rets = rets.mean() * 252; c_mat = rets.cov() * 252
-        res = np.zeros((3, 2000)); w_rec = []
-        for i in range(2000):
-            w = np.random.random(len(symbols)); w /= np.sum(w); w_rec.append(w)
-            p_r = np.sum(w * m_rets); p_s = np.sqrt(np.dot(w.T, np.dot(c_mat, w)))
-            res[0,i] = p_r; res[1,i] = p_s; res[2,i] = (p_r - 0.02) / p_s
-        m_idx = np.argmax(res[2]); curr_w = portfolio_df["現值_TWD"].values / portfolio_df["現值_TWD"].sum()
-        comp = pd.DataFrame({"股票代號": symbols, "目前權重 (%)": curr_w * 100, "Max Sharpe 建議 (%)": w_rec[m_idx] * 100})
-        return {"sim_df": pd.DataFrame({'Return': res[0], 'Volatility': res[1], 'Sharpe': res[2]}), "comparison": comp, "max_sharpe": (res[0, m_idx], res[1, m_idx]), "corr": rets.corr()}, None
-    except Exception as e: return None, str(e)
-
-# ==========================================
-# 4. 介面表格組件
+# 3. 介面表格組件
 # ==========================================
 COLS_RATIO = [1.2, 0.8, 1, 1, 1.2, 1.2, 1.2, 1, 0.6]
 
@@ -132,7 +110,7 @@ def display_market_table(df, title, currency, usd_rate, current_user):
         if r[8].button("🗑️", key=f"del_{row['股票代號']}_{current_user}"): save_data(load_data(current_user)[lambda x: x["股票代號"] != row['股票代號']], current_user); st.rerun()
 
 # ==========================================
-# 5. 主程式邏輯
+# 4. 主程式
 # ==========================================
 
 with st.sidebar:
@@ -150,7 +128,7 @@ df_record = pd.concat([load_data("Alan"), load_data("Jenny")], ignore_index=True
 st.title(f"📈 {current_user} 投資戰情室")
 tab1, tab2, tab3, tab4 = st.tabs(["📊 庫存配置", "🧠 技術健診", "⚖️ 組合分析 (MPT)", "💰 資產負債表"])
 
-# 全域數據準備
+# --- 全域資料預處理 ---
 usd_rate = get_exchange_rate()
 portfolio = pd.DataFrame()
 if not df_record.empty:
@@ -163,17 +141,47 @@ if not df_record.empty:
     portfolio["獲利"] = portfolio["現值"] - portfolio["總投入成本"]
     portfolio["獲利率(%)"] = (portfolio["獲利"] / portfolio["總投入成本"]) * 100
     portfolio["現值_TWD"] = portfolio.apply(lambda r: r["現值"] * (usd_rate if r["幣別"]=="USD" else 1), axis=1)
+    portfolio["獲利_TWD"] = portfolio.apply(lambda r: r["獲利"] * (usd_rate if r["幣別"]=="USD" else 1), axis=1)
+    portfolio["成本_TWD"] = portfolio.apply(lambda r: r["總投入成本"] * (usd_rate if r["幣別"]=="USD" else 1), axis=1)
 
 with tab1:
     if df_record.empty: st.info("尚無數據。")
     else:
-        if st.button("🔄 刷新最新報價"): st.cache_data.clear(); st.rerun()
+        if st.button("🔄 刷新報價"): st.cache_data.clear(); st.rerun()
         t_val = float(portfolio["現值_TWD"].sum())
+        t_cost = float(portfolio["成本_TWD"].sum())
+        t_prof = t_val - t_cost
+        roi = (t_prof / t_cost * 100) if t_cost != 0 else 0
+        
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("💰 總資產 (TWD)", f"${t_val:,.0f}"); c4.metric("💱 匯率", f"{usd_rate:.2f}")
+        c1.metric("💰 總資產 (TWD)", f"${t_val:,.0f}"); c2.metric("📈 總獲利 (TWD)", f"${t_prof:,.0f}"); c3.metric("📊 總報酬率", f"{roi:.2f}%"); c4.metric("💱 匯率", f"{usd_rate:.2f}")
+        
+        # --- 獲利瀑布圖 ---
+        st.divider(); st.subheader("🌊 獲利成長瀑布圖")
+        tw_prof = portfolio[portfolio["幣別"] == "TWD"]["獲利_TWD"].sum()
+        us_prof = portfolio[portfolio["幣別"] == "USD"]["獲利_TWD"].sum()
+        
+        fig_wf = go.Figure(go.Waterfall(
+            orientation = "v",
+            measure = ["relative", "relative", "relative", "total"],
+            x = ["總投入成本 (TWD)", "台股總獲利", "美股總獲利", "目前總現值"],
+            textposition = "outside",
+            text = [f"${t_cost:,.0f}", f"${tw_prof:,.0f}", f"${us_prof:,.0f}", f"${t_val:,.0f}"],
+            y = [t_cost, tw_prof, us_prof, t_val],
+            connector = {"line":{"color":"gray"}},
+            decreasing = {"marker":{"color":"#e74c3c"}},
+            increasing = {"marker":{"color":"#2ecc71"}},
+            totals = {"marker":{"color":"#3498db"}}
+        ))
+        fig_wf.update_layout(title="獲利組成拆解 (TWD)", showlegend=False, height=500)
+        st.plotly_chart(fig_wf, use_container_width=True)
+
+        # 圓餅圖
         st.divider(); pc1, pc2 = st.columns(2)
         with pc1: st.plotly_chart(px.pie(portfolio, values="現值_TWD", names="幣別", title="市場配置", hole=0.4), use_container_width=True)
         with pc2: st.plotly_chart(px.pie(portfolio, values="現值_TWD", names="股票代號", title="個股配置", hole=0.4), use_container_width=True)
+        
+        # 庫存表格
         st.divider(); tw_df = portfolio[portfolio["幣別"] == "TWD"]; us_df = portfolio[portfolio["幣別"] == "USD"]
         if not tw_df.empty: display_market_table(tw_df, "🇹🇼 台股庫存", "TWD", usd_rate, current_user)
         if not us_df.empty: display_market_table(us_df, "🇺🇸 美股庫存", "USD", usd_rate, current_user)
@@ -184,99 +192,91 @@ with tab2:
         target = st.selectbox("分析標的", portfolio["股票代號"].tolist())
         df_t = yf.Ticker(target).history(period="1y")
         if not df_t.empty:
-            df_t['RSI'], (df_t['BU'], df_t['BM'], df_t['BL']), (df_t['M'], df_t['MS'], df_t['MH']) = calculate_rsi(df_t['Close']), calculate_bb(df_t['Close']), calculate_macd(df_t['Close'])
-            f = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.7, 0.3])
-            f.add_trace(go.Scatter(x=df_t.index, y=df_t['Close'], name="價格"),1,1); f.add_trace(go.Scatter(x=df_t.index, y=df_t['BU'], name="上軌", line=dict(dash='dot')),1,1)
-            f.add_trace(go.Bar(x=df_t.index, y=df_t['MH'], name="MACD"),2,1); f.update_layout(height=500, template="plotly_dark"); st.plotly_chart(f, use_container_width=True)
+            df_t['RSI'] = calculate_rsi(df_t['Close'])
+            df_t['BU'], df_t['BM'], df_t['BL'] = calculate_bb(df_t['Close'])
+            df_t['MACD'], df_t['MS'], df_t['MH'] = calculate_macd(df_t['Close'])
+            curr = df_t.iloc[-1]
+            
+            # --- 技術指標建議邏輯 ---
+            score = 0; reasons = []
+            if curr['RSI'] < 30: score += 1; reasons.append("RSI 處於超跌區 ( <30 )")
+            elif curr['RSI'] > 70: score -= 1; reasons.append("RSI 處於超漲區 ( >70 )")
+            
+            if curr['Close'] < curr['BL']: score += 1; reasons.append("股價觸及布林下軌 (支撐位)")
+            elif curr['Close'] > curr['BU']: score -= 1; reasons.append("股價觸及布林上軌 (壓力位)")
+            
+            if curr['MACD'] > curr['MS']: score += 1; reasons.append("MACD 呈多頭趨勢 (黃金交叉)")
+            else: score -= 1; reasons.append("MACD 呈空頭趨勢 (死亡交叉)")
+            
+            advice = "強力買入 🚀" if score >= 2 else "分批佈局 📈" if score == 1 else "持股觀望 ⚖️" if score == 0 else "分批獲利 💰" if score == -1 else "建議出場 📉"
+            advice_color = "red" if score >= 1 else "green" if score <= -1 else "gray"
 
-with tab3:
-    st.subheader("⚖️ 投資組合優化 (MPT)")
-    if portfolio.empty: st.info("請先新增持股。")
-    else:
-        if st.button("🚀 啟動模擬計算", type="primary"):
-            with st.spinner("模擬 2000 種配置中..."):
-                res, err = perform_mpt_simulation(portfolio)
-                if err: st.error(err)
-                else: st.session_state.mpt_results = res
-        if st.session_state.mpt_results:
-            res = st.session_state.mpt_results
-            sc1, sc2 = st.columns([2, 1])
-            with sc1:
-                fig = px.scatter(res['sim_df'], x='Volatility', y='Return', color='Sharpe', title="效率前緣雲圖")
-                fig.add_trace(go.Scatter(x=[res['max_sharpe'][1]], y=[res['max_sharpe'][0]], mode='markers', marker=dict(color='red', size=15, symbol='star'), name='Max Sharpe'))
-                st.plotly_chart(fig, use_container_width=True)
-            with sc2: st.dataframe(res['comparison'].set_index("股票代號").style.format("{:.2f}%"))
+            st.subheader(f"🔍 {target} 技術診斷報告")
+            tc1, tc2, tc3 = st.columns(3)
+            tc1.metric("最新 RSI", f"{curr['RSI']:.1f}")
+            tc2.metric("MACD 狀態", "多頭" if curr['MACD'] > curr['MS'] else "空頭")
+            tc3.metric("布林位置", "下軌支撐" if curr['Close'] < curr['BM'] else "上軌壓力")
+            
+            st.markdown(f"#### 💡 綜合投資建議：**:{advice_color}[{advice}]**")
+            st.info("分析依據：\n* " + "\n* ".join(reasons))
+
+            f = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.7, 0.3], vertical_spacing=0.05)
+            f.add_trace(go.Scatter(x=df_t.index, y=df_t['Close'], name="價格"),1,1)
+            f.add_trace(go.Scatter(x=df_t.index, y=df_t['BU'], name="BB上軌", line=dict(dash='dot', color='rgba(255,0,0,0.3)')),1,1)
+            f.add_trace(go.Scatter(x=df_t.index, y=df_t['BL'], name="BB下軌", line=dict(dash='dot', color='rgba(0,255,0,0.3)')),1,1)
+            f.add_trace(go.Bar(x=df_t.index, y=df_t['MH'], name="MACD柱"),2,1)
+            f.update_layout(height=600, template="plotly_dark", showlegend=False); st.plotly_chart(f, use_container_width=True)
 
 with tab4:
-    st.subheader("💰 家庭資產負債表")
+    st.subheader("💰 家庭資產負債表 (淨資產監控)")
     
-    # --- 1. 資產端 ---
+    # 1. 資產端
     st.markdown("#### 1. 資產端")
     ic1, ic2 = st.columns(2)
-    with ic1: cash_res = st.number_input("💵 現金預留 (TWD)", min_value=0.0, value=500000.0)
+    with ic1: cash_res = st.number_input("💵 現金預留 (TWD)", min_value=0.0, value=500000.0, step=10000.0)
     with ic2:
-        stock_val_twd = float(portfolio["現值_TWD"].sum()) if not portfolio.empty else 0.0
-        st.info(f"股票現值 (自動導入): ${stock_val_twd:,.0f}")
-
-    # --- 2. 貸款端 ---
-    st.divider()
-    st.markdown("#### 2. 負債端：貸款設定")
+        if not portfolio.empty:
+            st.info(f"股票現值 (自動導入): ${portfolio['現值_TWD'].sum():,.0f}")
+    
+    # 2. 負債端 (雙筆貸款)
+    st.divider(); st.markdown("#### 2. 負債端：貸款設定")
     lc1, lc2 = st.columns(2)
     with lc1:
         st.write("**第一筆貸款 (如房貸)**")
         l1_p = st.number_input("🏦 原始本金 (L1)", value=3000000.0)
         l1_r = st.number_input("📈 年利率 (%) (L1)", value=2.65)
-        l1_y = st.number_input("⏳ 期限 (年) (L1)", value=30)
-        l1_m = st.number_input("📅 已還月數 (L1)", value=12)
+        l1_y = st.number_input("⏳ 期限 (年) (L1)", value=30); l1_m = st.number_input("📅 已還月數 (L1)", value=12)
     with lc2:
-        st.write("**第二筆貸款 (如信貸/二貸)**")
+        st.write("**第二筆貸款 (如信貸)**")
         l2_p = st.number_input("🏦 原始本金 (L2)", value=0.0)
         l2_r = st.number_input("📈 年利率 (%) (L2)", value=3.5)
-        l2_y = st.number_input("⏳ 期限 (年) (L2)", value=7)
-        l2_m = st.number_input("📅 已還月數 (L2)", value=0)
+        l2_y = st.number_input("⏳ 期限 (年) (L2)", value=7); l2_m = st.number_input("📅 已還月數 (L2)", value=0)
 
-    # --- 3. 股票質押監控 (更新：將維持率放在底下) ---
-    st.divider()
-    st.markdown("#### 3. 槓桿監控：股票質押")
+    # 3. 股票質押
+    st.divider(); st.markdown("#### 3. 槓桿監控：股票質押")
     gc1, gc2 = st.columns(2)
     with gc1: pledge_loan = st.number_input("💸 質押借款總額 (TWD)", min_value=0.0, value=0.0)
     with gc2: pledge_targets = st.multiselect("🎯 選擇擔保標的", portfolio["股票代號"].tolist()) if not portfolio.empty else []
 
-    # 計算維持率邏輯
-    m_ratio = 0.0
-    if pledge_loan > 0 and pledge_targets:
-        collateral_val = portfolio[portfolio["股票代號"].isin(pledge_targets)]["現值_TWD"].sum()
-        m_ratio = (collateral_val / pledge_loan * 100)
-        m_color = "normal" if m_ratio > 160 else "off" if m_ratio > 140 else "inverse"
-        
-        # 顯示區塊
-        st.markdown(f"**📉 目前質押監控指標**")
-        rc1, rc2 = st.columns([1, 2])
-        rc1.metric("🚨 即時維持率", f"{m_ratio:.2f}%", delta="門檻 130%", delta_color=m_color)
-        
-        if m_ratio < 140:
-            st.warning(f"⚠️ 維持率低於安全水位 (140%)！")
-        
-        # 斷頭價預估 (單一標的)
-        if len(pledge_targets) == 1:
-            target_stock = pledge_targets[0]
-            target_shares = portfolio[portfolio["股票代號"] == target_stock]["股數"].values[0]
-            # 斷頭價公式：維持率 130% 時的價格
-            liq_price = (1.3 * pledge_loan) / target_shares
-            st.error(f"🚩 **{target_stock} 斷頭警示價**：當股價跌破 **${liq_price:.2f}** 時維持率將低於 130%。")
-        elif len(pledge_targets) > 1:
-            st.caption("*(多標的擔保建議參考整體維持率)*")
-
-    # --- 4. 財務摘要 ---
-    st.divider()
-    st.markdown("#### 4. 家庭資產負債摘要")
+    # 計算剩餘與維持率
     rem_l1 = calculate_remaining_loan(l1_p, l1_r, l1_y, l1_m)
     rem_l2 = calculate_remaining_loan(l2_p, l2_r, l2_y, l2_m)
-    total_assets = stock_val_twd + cash_res
+    total_assets = float(portfolio["現值_TWD"].sum()) + cash_res if not portfolio.empty else cash_res
     total_debts = rem_l1 + rem_l2 + pledge_loan
     net_worth = total_assets - total_debts
 
-    mc1, mc2, mc3 = st.columns(3)
+    # 顯示維持率
+    if pledge_loan > 0 and pledge_targets:
+        collateral_val = portfolio[portfolio["股票代號"].isin(pledge_targets)]["現值_TWD"].sum()
+        m_ratio = (collateral_val / pledge_loan * 100)
+        m_color = "normal" if m_ratio > 150 else "off" if m_ratio > 140 else "inverse"
+        st.metric("🚨 即時質押維持率", f"{m_ratio:.2f}%", delta="門檻 130%", delta_color=m_color)
+        if len(pledge_targets) == 1:
+            liq_p = (1.3 * pledge_loan) / portfolio[portfolio["股票代號"] == pledge_targets[0]]["股數"].values[0]
+            st.error(f"🚩 斷頭預警價：當 {pledge_targets[0]} 跌破 **${liq_p:.2f}** 時維持率將低於 130%。")
+
+    # 4. 財務摘要
+    st.divider(); mc1, mc2, mc3 = st.columns(3)
     mc1.metric("💼 家庭總資產", f"${total_assets:,.0f}")
     mc2.metric("📉 剩餘總負債", f"-${total_debts:,.0f}", delta=f"L1:${rem_l1:,.0f} | L2:${rem_l2:,.0f}", delta_color="inverse")
     mc3.metric("🏆 家庭淨資產 (Net Worth)", f"${net_worth:,.0f}")
@@ -284,7 +284,7 @@ with tab4:
     st.write("#### 📊 資產負債結構分析")
     bal_df = pd.DataFrame({
         "項目": ["股票現值", "現金預留", "貸款 1 餘額", "貸款 2 餘額", "質押借款"],
-        "金額": [stock_val_twd, cash_res, -rem_l1, -rem_l2, -pledge_loan],
+        "金額": [total_assets - cash_res, cash_res, -rem_l1, -rem_l2, -pledge_loan],
         "類別": ["資產", "資產", "負債", "負債", "負債"]
     })
     st.plotly_chart(px.bar(bal_df, x="項目", y="金額", color="類別", color_discrete_map={"資產":"#2ecc71","負債":"#e74c3c"}), use_container_width=True)
