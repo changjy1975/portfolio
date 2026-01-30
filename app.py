@@ -6,6 +6,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import os
 import shutil
+import json
 from datetime import datetime
 import pytz
 import numpy as np
@@ -15,7 +16,6 @@ import numpy as np
 # ==========================================
 st.set_page_config(page_title="Alan & Jenny 投資戰情室", layout="wide")
 
-# 確保 MPT 結果與排序狀態持久化
 if 'mpt_results' not in st.session_state: st.session_state.mpt_results = None
 if 'sort_col' not in st.session_state: st.session_state.sort_col = "獲利"
 if 'sort_asc' not in st.session_state: st.session_state.sort_asc = False
@@ -25,7 +25,7 @@ if not os.path.exists(BACKUP_DIR):
     os.makedirs(BACKUP_DIR)
 
 # ==========================================
-# 2. 核心功能函數 (資料處理、行情與財務計算)
+# 2. 核心功能函數 (新增財務資料儲存邏輯)
 # ==========================================
 
 def load_data(user):
@@ -38,6 +38,25 @@ def save_data(df, user):
         now = datetime.now(pytz.timezone('Asia/Taipei')).strftime("%Y%m%d_%H%M%S")
         shutil.copy2(source_path, os.path.join(BACKUP_DIR, f"backup_{user}_{now}.csv"))
     df.to_csv(source_path, index=False)
+
+# --- 新增：財務設定儲存與讀取 ---
+def load_financial_config(user):
+    path = f"financial_config_{user}.json"
+    if os.path.exists(path):
+        with open(path, "r") as f:
+            return json.load(f)
+    # 預設值 (包含房貸與質押預設參數)
+    return {
+        "cash_res": 500000.0,
+        "l1_p": 3000000.0, "l1_r": 2.65, "l1_y": 30, "l1_m": 12,
+        "l2_p": 0.0, "l2_r": 3.5, "l2_y": 7, "l2_m": 0,
+        "pledge_loan": 0.0, "pledge_targets": []
+    }
+
+def save_financial_config(user, config):
+    path = f"financial_config_{user}.json"
+    with open(path, "w") as f:
+        json.dump(config, f)
 
 @st.cache_data(ttl=3600)
 def get_exchange_rate():
@@ -70,9 +89,10 @@ def calculate_remaining_loan(principal, annual_rate, years, months_passed):
     remaining = principal * ((1 + r)**n - (1 + r)**months_passed) / ((1 + r)**n - 1)
     return float(remaining)
 
-# --- 技術指標 ---
+# --- 技術指標計算 ---
 def calculate_rsi(series, period=14):
-    delta = series.diff(); gain = delta.where(delta > 0, 0); loss = -delta.where(delta < 0, 0)
+    delta = series.diff()
+    gain = delta.where(delta > 0, 0); loss = -delta.where(delta < 0, 0)
     avg_gain = gain.ewm(com=period-1, min_periods=period).mean()
     avg_loss = loss.ewm(com=period-1, min_periods=period).mean()
     return 100 - (100 / (1 + avg_gain / (avg_loss + 1e-9)))
@@ -131,7 +151,7 @@ def display_market_table(df, title, currency, usd_rate, user):
         if r[8].button("🗑️", key=f"del_{row['股票代號']}_{user}"): save_data(load_data(user)[lambda x: x["股票代號"] != row['股票代號']], user); st.rerun()
 
 # ==========================================
-# 5. 主程式頁面
+# 5. 主程式頁面邏輯
 # ==========================================
 
 with st.sidebar:
@@ -168,14 +188,10 @@ if not df_record.empty:
         t_prof = t_val - t_cost; roi = (t_prof/t_cost*100) if t_cost != 0 else 0
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("💰 總資產 (TWD)", f"${t_val:,.0f}"); c2.metric("📈 總獲利 (TWD)", f"${t_prof:,.0f}"); c3.metric("📊 總報酬率", f"{roi:.2f}%"); c4.metric("💱 匯率", f"{usd_rate:.2f}")
-        
-        # 圓餅圖置頂
         st.divider(); st.subheader("🎯 投資組合配置")
         pc1, pc2 = st.columns(2)
         with pc1: st.plotly_chart(px.pie(portfolio, values="現值_TWD", names="幣別", title="市場配置", hole=0.4), use_container_width=True)
         with pc2: st.plotly_chart(px.pie(portfolio, values="現值_TWD", names="股票代號", title="個股配置", hole=0.4), use_container_width=True)
-        
-        # 庫存清單置底
         st.divider(); tw_df = portfolio[portfolio["幣別"]=="TWD"]; us_df = portfolio[portfolio["幣別"]=="USD"]
         if not tw_df.empty: display_market_table(tw_df, "🇹🇼 台股庫存明細", "TWD", usd_rate, current_user)
         if not us_df.empty: display_market_table(us_df, "🇺🇸 美股庫存明細", "USD", usd_rate, current_user)
@@ -207,33 +223,58 @@ if not df_record.empty:
             st.divider(); st.write("#### 相關性矩陣"); st.plotly_chart(px.imshow(res['corr'], text_auto=".2f"), use_container_width=True)
 
     with tab4:
-        st.subheader("💰 家庭資產負債表")
-        c_r = st.number_input("💵 現金預留 (TWD)", value=500000.0)
-        st.divider(); lc1, lc2 = st.columns(2)
-        with lc1:
-            st.write("**貸款 1 (房貸)**"); l1p = st.number_input("貸款 1 本金", value=3000000.0); l1r = st.number_input("貸款 1 利率", value=2.65); l1y = st.number_input("貸款 1 年限", value=30); l1m = st.number_input("貸款 1 已還月", value=12)
-        with lc2:
-            st.write("**貸款 2 (信貸/二貸)**"); l2p = st.number_input("貸款 2 本金", value=0.0); l2r = st.number_input("貸款 2 利率", value=3.5); l2y = st.number_input("貸款 2 年限", value=7); l2m = st.number_input("貸款 2 已還月", value=0)
+        if current_user == "All":
+            st.warning("請切換至單一使用者 (Alan 或 Jenny) 以儲存財務設定。")
+            f_cfg = load_financial_config("Alan") # 預覽模式
+        else:
+            f_cfg = load_financial_config(current_user)
+
+        st.subheader("💰 家庭資產負債表管理")
         
-        # --- 股票質押監控 (搬移至此) ---
-        st.divider(); st.write("#### 📊 股票質押監控 (Stock Pledging)")
-        gc1, gc2 = st.columns(2)
-        with gc1: pl = st.number_input("質押借款金額 (TWD)", value=0.0)
-        with gc2: pt = st.multiselect("擔保標的選擇", portfolio["股票代號"].tolist())
+        # 使用 st.form 確保資料統一儲存
+        with st.form("financial_form"):
+            st.markdown("#### 1. 資金與貸款設定")
+            c_r = st.number_input("💵 現金預留 (TWD)", value=f_cfg["cash_res"])
+            st.divider(); lc1, lc2 = st.columns(2)
+            with lc1:
+                st.write("**第一筆貸款 (房貸)**")
+                l1p = st.number_input("本金 (L1)", value=f_cfg["l1_p"]); l1r = st.number_input("利率 (L1)", value=f_cfg["l1_r"])
+                l1y = st.number_input("年限 (L1)", value=f_cfg["l1_y"]); l1m = st.number_input("已還月 (L1)", value=f_cfg["l1_m"])
+            with lc2:
+                st.write("**第二筆貸款 (信貸)**")
+                l2p = st.number_input("本金 (L2)", value=f_cfg["l2_p"]); l2r = st.number_input("利率 (L2)", value=f_cfg["l2_r"])
+                l2y = st.number_input("年限 (L2)", value=f_cfg["l2_y"]); l2m = st.number_input("已還月 (L2)", value=f_cfg["l2_m"])
+            
+            st.divider(); st.write("#### 2. 股票質押設定")
+            gc1, gc2 = st.columns(2)
+            with gc1: pl = st.number_input("質押借款金額 (TWD)", value=f_cfg["pledge_loan"])
+            with gc2: pt = st.multiselect("擔保標的選擇", portfolio["股票代號"].tolist(), default=f_cfg["pledge_targets"])
+            
+            if st.form_submit_button("💾 儲存財務資料"):
+                new_cfg = {
+                    "cash_res": c_r, "l1_p": l1p, "l1_r": l1r, "l1_y": l1y, "l1_m": l1m,
+                    "l2_p": l2p, "l2_r": l2r, "l2_y": l2y, "l2_m": l2m,
+                    "pledge_loan": pl, "pledge_targets": pt
+                }
+                save_financial_config(current_user, new_cfg)
+                st.success("財務資料已儲存！")
+                st.rerun()
+
+        # 財務診斷報告 (即時計算)
+        st.divider(); st.write("#### 📊 即時風險與淨資產報告")
+        rem1, rem2 = calculate_remaining_loan(l1p, l1r, l1y, l1m), calculate_remaining_loan(l2p, l2r, l2y, l2m)
+        t_debt = rem1 + rem2 + pl; n_w = (t_val + c_r) - t_debt
+        
+        mc1, mc2, mc3 = st.columns(3)
+        mc1.metric("💼 家庭總資產", f"${(t_val+c_r):,.0f}")
+        mc2.metric("📉 剩餘總負債", f"-${t_debt:,.0f}", delta=f"L1:${rem1:,.0f} | L2:${rem2:,.0f}", delta_color="inverse")
+        mc3.metric("🏆 家庭淨資產", f"${n_w:,.0f}")
         
         if pl > 0 and pt:
             m_r = (portfolio[portfolio["股票代號"].isin(pt)]["現值_TWD"].sum() / pl * 100)
             m_clr = "normal" if m_r > 160 else "off" if m_r > 140 else "inverse"
-            st.metric("🚨 即時質押維持率", f"{m_r:.2f}%", delta="門檻 130%", delta_color=m_clr)
+            st.info(f"🚨 即時質押維持率：**{m_r:.2f}%** (門檻 130%)")
             if len(pt)==1:
                 st.error(f"🚩 {pt[0]} 斷頭警示價：**${(1.3 * pl / portfolio[portfolio['股票代號']==pt[0]]['股數'].values[0]):.2f}**")
-            if m_r < 140: st.warning("⚠️ 維持率偏低，請留意市場波動！")
 
-        rem1, rem2 = calculate_remaining_loan(l1p, l1r, l1y, l1m), calculate_remaining_loan(l2p, l2r, l2y, l2m)
-        t_debt = rem1 + rem2 + pl; n_w = (t_val + c_r) - t_debt
-        st.divider(); mc1, mc2, mc3 = st.columns(3)
-        mc1.metric("💼 家庭總資產", f"${(t_val+c_r):,.0f}"); mc2.metric("📉 剩餘總負債", f"-${t_debt:,.0f}", delta=f"L1:${rem1:,.0f} | L2:${rem2:,.0f}", delta_color="inverse"); mc3.metric("🏆 家庭淨資產", f"${n_w:,.0f}")
-        
-        st.write("#### 🏛️ 資產負債分佈")
-        st.plotly_chart(px.bar(pd.DataFrame({"項目": ["股票現值","現金預留","貸款 1","貸款 2","質押借款"], "金額": [t_val, c_r, -rem1, -rem2, -pl], "類別": ["資產","資產","負債","負債","負債"]}), x="項目", y="金額", color="類別", color_discrete_map={"資產":"#2ecc71","負債":"#e74c3c"}), use_container_width=True)
 else: st.info("尚未發現持股，請從側邊欄新增標的。")
