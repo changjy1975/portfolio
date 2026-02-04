@@ -6,15 +6,16 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import os
 import shutil
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 import numpy as np
 
 # ==========================================
-# 1. 初始化設定
+# 1. 初始化設定與路徑
 # ==========================================
 st.set_page_config(page_title="Alan & Jenny 投資戰情室", layout="wide")
 
+# 初始化 Session State
 if 'mpt_results' not in st.session_state: st.session_state.mpt_results = None
 if 'sort_col' not in st.session_state: st.session_state.sort_col = "獲利"
 if 'sort_asc' not in st.session_state: st.session_state.sort_asc = False
@@ -38,6 +39,7 @@ def save_data(df, user):
     df.to_csv(source_path, index=False)
 
 def update_daily_snapshot(user, total_val, total_profit, rate):
+    """資產快照紀錄檔"""
     path = f"history_{user}.csv"
     today = datetime.now(pytz.timezone('Asia/Taipei')).strftime("%Y-%m-%d")
     if os.path.exists(path):
@@ -77,29 +79,19 @@ def get_latest_quotes(symbols):
 @st.cache_data(ttl=3600)
 def get_backtest_data(symbols):
     if not symbols: return pd.DataFrame()
-    data = yf.download(symbols + ["USDTWD=X", "^GSPC"], period="1y", interval="1d")['Close']
+    data = yf.download(symbols + ["USDTWD=X"], period="1y", interval="1d")['Close']
     return data.ffill()
 
 def identify_currency(symbol):
     return "TWD" if (".TW" in symbol or ".TWO" in symbol) else "USD"
 
-# --- 風險與模擬引擎 ---
-def calculate_mdd(series):
-    roll_max = series.cummax()
-    drawdown = (series - roll_max) / roll_max
-    return drawdown.min()
-
-def calculate_beta(portfolio_returns, benchmark_returns):
-    concat_df = pd.concat([portfolio_returns, benchmark_returns], axis=1).dropna()
-    if len(concat_df) < 2: return 0.0
-    matrix = np.cov(concat_df.iloc[:, 0], concat_df.iloc[:, 1])
-    return matrix[0, 1] / matrix[1, 1]
-
-def perform_mpt_simulation(portfolio_df, hist_prices):
+# --- MPT 引擎 ---
+def perform_mpt_simulation(portfolio_df):
     symbols = portfolio_df["股票代號"].tolist()
-    if len(symbols) < 2: return None, "至少需要 2 支標的才能優化。"
+    if len(symbols) < 2: return None, "至少需要 2 支標的才能進行優化模擬。"
     try:
-        returns = hist_prices[symbols].pct_change().dropna()
+        data = yf.download(symbols, period="3y", interval="1d", auto_adjust=True)['Close']
+        returns = data.ffill().pct_change().dropna()
         mean_returns = returns.mean() * 252
         cov_matrix = returns.cov() * 252
         num_portfolios = 2000
@@ -114,8 +106,7 @@ def perform_mpt_simulation(portfolio_df, hist_prices):
             results[0,i] = p_ret
             results[1,i] = p_std
             results[2,i] = (p_ret - 0.02) / p_std # Rf=2%
-        max_idx = np.argmax(results[2])
-        min_idx = np.argmin(results[1])
+        max_idx = np.argmax(results[2]); min_idx = np.argmin(results[1])
         comparison = pd.DataFrame({
             "股票代號": symbols,
             "目前權重 (%)": (portfolio_df["現值_TWD"] / portfolio_df["現值_TWD"].sum() * 100).values,
@@ -123,7 +114,8 @@ def perform_mpt_simulation(portfolio_df, hist_prices):
             "Min Vol 建議 (%)": weights_record[min_idx] * 100
         })
         return {"sim_df": pd.DataFrame({'Return': results[0], 'Volatility': results[1], 'Sharpe': results[2]}),
-                "comparison": comparison, "max_sharpe": (results[0, max_idx], results[1, max_idx])}, None
+                "comparison": comparison, "max_sharpe": (results[0, max_idx], results[1, max_idx]),
+                "corr": returns.corr()}, None
     except Exception as e: return None, str(e)
 
 # --- 技術指標 ---
@@ -158,7 +150,8 @@ def display_market_table(df, title, currency, usd_rate, current_user):
             if st.session_state.sort_col == col_name: st.session_state.sort_asc = not st.session_state.sort_asc
             else: st.session_state.sort_col, st.session_state.sort_asc = col_name, False
             st.rerun()
-    
+    h_cols[8].write("**管理**")
+
     df_sorted = df.sort_values(by=st.session_state.sort_col, ascending=st.session_state.sort_asc)
     for _, row in df_sorted.iterrows():
         r = st.columns(COLS_RATIO)
@@ -169,7 +162,7 @@ def display_market_table(df, title, currency, usd_rate, current_user):
             full = load_data(current_user); save_data(full[full["股票代號"] != row['股票代號']], current_user); st.rerun()
 
 # ==========================================
-# 4. 主程式
+# 4. 主程式邏輯
 # ==========================================
 
 with st.sidebar:
@@ -187,7 +180,7 @@ with st.sidebar:
 df_record = pd.concat([load_data("Alan"), load_data("Jenny")], ignore_index=True) if current_user == "All" else load_data(current_user)
 
 st.title(f"📈 {current_user} 投資戰情室")
-tab1, tab2, tab3 = st.tabs(["📊 庫存配置與績效", "🧠 技術健診", "⚖️ 組合優化與風險 (MPT)"])
+tab1, tab2, tab3 = st.tabs(["📊 庫存配置與績效", "🧠 技術健診", "⚖️ 組合分析 (MPT)"])
 
 if not df_record.empty:
     usd_rate = get_exchange_rate()
@@ -198,11 +191,12 @@ if not df_record.empty:
 
     price_map = get_latest_quotes(portfolio["股票代號"].tolist())
     portfolio["最新股價"] = portfolio["股票代號"].map(price_map)
-    portfolio["現值"] = portfolio["股數"] * portfolio["最新股價"]
-    portfolio["現值_TWD"] = portfolio.apply(lambda r: r["現值"] * (usd_rate if r["幣別"]=="USD" else 1), axis=1)
-    portfolio["獲利_TWD"] = portfolio.apply(lambda r: (r["現值"] - (r["股數"] * r["平均持有單價"])) * (usd_rate if r["幣別"]=="USD" else 1), axis=1)
     portfolio["總投入成本"] = portfolio["股數"] * portfolio["平均持有單價"]
-    portfolio["獲利率(%)"] = ((portfolio["現值"] - (portfolio["股數"] * portfolio["平均持有單價"])) / (portfolio["股數"] * portfolio["平均持有單價"])) * 100
+    portfolio["現值"] = portfolio["股數"] * portfolio["最新股價"]
+    portfolio["獲利"] = portfolio["現值"] - portfolio["總投入成本"]
+    portfolio["獲利率(%)"] = (portfolio["獲利"] / portfolio["總投入成本"]) * 100
+    portfolio["現值_TWD"] = portfolio.apply(lambda r: r["現值"] * (usd_rate if r["幣別"]=="USD" else 1), axis=1)
+    portfolio["獲利_TWD"] = portfolio.apply(lambda r: r["獲利"] * (usd_rate if r["幣別"]=="USD" else 1), axis=1)
 
     if current_user != "All": update_daily_snapshot(current_user, portfolio["現值_TWD"].sum(), portfolio["獲利_TWD"].sum(), usd_rate)
 
@@ -212,6 +206,7 @@ if not df_record.empty:
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("💰 總資產 (TWD)", f"${t_val:,.0f}"); c2.metric("📈 總獲利 (TWD)", f"${t_prof:,.0f}"); c3.metric("📊 總報酬率", f"{roi:.2f}%"); c4.metric("💱 匯率", f"{usd_rate:.2f}")
 
+        # 回測圖表
         st.divider(); st.subheader("📈 歷史淨值回測 (過去一年模擬)")
         hist_prices = get_backtest_data(portfolio["股票代號"].tolist())
         if not hist_prices.empty:
@@ -219,15 +214,26 @@ if not df_record.empty:
             fx_hist = hist_prices["USDTWD=X"].ffill()
             for _, row in portfolio.iterrows():
                 p_hist = hist_prices[row["股票代號"]].ffill()
-                equity_curve += p_hist * row["股數"] * (fx_hist if row["幣別"] == "USD" else 1.0)
+                multiplier = fx_hist if row["幣別"] == "USD" else 1.0
+                equity_curve += p_hist * row["股數"] * multiplier
             fig_hist = go.Figure()
             fig_hist.add_trace(go.Scatter(x=equity_curve.index, y=equity_curve, name="組合淨值", line=dict(color='#00D1FF', width=3)))
             start_val = equity_curve.iloc[0]
             days = (equity_curve.index - equity_curve.index[0]).days
             cost_line = start_val * (1 + 0.0265 * (days / 365))
             fig_hist.add_trace(go.Scatter(x=equity_curve.index, y=cost_line, name="借貸成本基準 (2.65%)", line=dict(color='gray', dash='dash')))
-            fig_hist.update_layout(height=400, template="plotly_dark", margin=dict(l=20, r=20, t=30, b=20))
+            fig_hist.update_layout(height=400, template="plotly_dark", hovermode='x unified', margin=dict(l=20, r=20, t=30, b=20))
             st.plotly_chart(fig_hist, use_container_width=True)
+
+        # 圓餅圖
+        st.divider(); st.subheader("🎯 投資組合配置分析")
+        pc1, pc2 = st.columns(2)
+        with pc1: st.plotly_chart(px.pie(portfolio, values="現值_TWD", names="幣別", title="市場配置 (TWD)", hole=0.45), use_container_width=True)
+        with pc2:
+            view_mode = st.selectbox("選擇個股配置範圍：", ["全部", "台股", "美股"], key="pie_filter")
+            chart_df = portfolio[portfolio["幣別"] == ( "TWD" if view_mode == "台股" else "USD" )] if view_mode != "全部" else portfolio
+            if not chart_df.empty: st.plotly_chart(px.pie(chart_df, values="現值_TWD", names="股票代號", title=f"個股配置 ({view_mode})", hole=0.45), use_container_width=True)
+            else: st.info(f"目前沒有 {view_mode} 的資料。")
 
         st.divider()
         for m, cur in [("🇹🇼 台股庫存", "TWD"), ("🇺🇸 美股庫存", "USD")]:
@@ -244,4 +250,28 @@ if not df_record.empty:
             fig.add_trace(go.Scatter(x=df_tech.index, y=df_tech['Close'], name="收盤價", line=dict(color='#00D1FF')), row=1, col=1)
             fig.add_trace(go.Scatter(x=df_tech.index, y=df_tech['BB_U'], name="上軌", line=dict(dash='dot', color='rgba(255, 82, 82, 0.8)')), row=1, col=1)
             fig.add_trace(go.Scatter(x=df_tech.index, y=df_tech['BB_L'], name="下軌", line=dict(dash='dot', color='rgba(76, 175, 80, 0.8)')), row=1, col=1)
-            macd
+            macd_colors = ['#FF5252' if val < 0 else '#4CAF50' for val in df_tech['MACD_H']]
+            fig.add_trace(go.Bar(x=df_tech.index, y=df_tech['MACD_H'], name="MACD", marker_color=macd_colors), row=2, col=1)
+            fig.update_layout(height=600, template="plotly_dark", showlegend=False)
+            st.plotly_chart(fig, use_container_width=True)
+
+    with tab3:
+        st.subheader("⚖️ MPT 組合優化模擬")
+        if st.button("🚀 啟動模擬計算", type="primary"):
+            res, err = perform_mpt_simulation(portfolio)
+            if err: st.error(err)
+            else: st.session_state.mpt_results = res
+        if st.session_state.mpt_results:
+            res = st.session_state.mpt_results
+            sc1, sc2 = st.columns([2, 1])
+            with sc1:
+                fig_mpt = px.scatter(res['sim_df'], x='Volatility', y='Return', color='Sharpe', title="效率前緣雲圖", labels={'Volatility':'年化波動','Return':'年化回報'})
+                fig_mpt.add_trace(go.Scatter(x=[res['max_sharpe'][1]], y=[res['max_sharpe'][0]], mode='markers', marker=dict(color='red', size=15, symbol='star'), name='Max Sharpe'))
+                st.plotly_chart(fig_mpt, use_container_width=True)
+            with sc2:
+                st.write("#### 建議配置比例")
+                st.dataframe(res['comparison'].set_index("股票代號").style.format("{:.2f}%"))
+            st.divider(); st.write("#### 資產相關性矩陣")
+            st.plotly_chart(px.imshow(res['corr'], text_auto=".2f", color_continuous_scale='RdBu_r'), use_container_width=True)
+else:
+    st.info("尚無持股資料，請從側邊欄新增。")
