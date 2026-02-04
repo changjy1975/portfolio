@@ -227,11 +227,8 @@ if not df_record.empty:
         pc1, pc2 = st.columns(2)
         with pc1: 
             st.plotly_chart(px.pie(portfolio, values="現值_TWD", names="幣別", title="市場配置 (TWD)", hole=0.45), use_container_width=True)
-        
         with pc2:
-            # --- 新增的個股過濾下拉選單 ---
             view_mode = st.selectbox("選擇個股配置範圍：", ["全部", "台股", "美股"], key="pie_filter")
-            
             if view_mode == "台股":
                 chart_df = portfolio[portfolio["幣別"] == "TWD"]
                 chart_title = "個股配置 (台股)"
@@ -277,9 +274,13 @@ if not df_record.empty:
             # 繪製技術圖表
             fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.1, row_heights=[0.7, 0.3])
             fig.add_trace(go.Scatter(x=df_tech.index, y=df_tech['Close'], name="收盤價"), row=1, col=1)
-            fig.add_trace(go.Scatter(x=df_tech.index, y=df_tech['BB_U'], name="布林上軌", line=dict(dash='dot', color='rgba(255,0,0,0.3)')), row=1, col=1)
-            fig.add_trace(go.Scatter(x=df_tech.index, y=df_tech['BB_L'], name="布林下軌", line=dict(dash='dot', color='rgba(0,255,0,0.3)')), row=1, col=1)
-            fig.add_trace(go.Bar(x=df_tech.index, y=df_tech['MACD_H'], name="MACD 能量柱"), row=2, col=1)
+            # 提高布林通道透明度並使用更亮顯的顏色
+            fig.add_trace(go.Scatter(x=df_tech.index, y=df_tech['BB_U'], name="布林上軌", line=dict(dash='dot', color='rgba(255, 82, 82, 0.8)')), row=1, col=1)
+            fig.add_trace(go.Scatter(x=df_tech.index, y=df_tech['BB_L'], name="布林下軌", line=dict(dash='dot', color='rgba(76, 175, 80, 0.8)')), row=1, col=1)
+            
+            # MACD 能量柱：亮色處理，並區分紅綠
+            macd_colors = ['#FF5252' if val < 0 else '#4CAF50' for val in df_tech['MACD_H']]
+            fig.add_trace(go.Bar(x=df_tech.index, y=df_tech['MACD_H'], name="MACD 能量柱", marker_color=macd_colors), row=2, col=1)
             fig.update_layout(height=600, template="plotly_dark", showlegend=False)
             st.plotly_chart(fig, use_container_width=True)
 
