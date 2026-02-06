@@ -161,6 +161,24 @@ def display_market_table(df, title, currency, usd_rate, current_user):
         if r[8].button("🗑️", key=f"del_{row['股票代號']}_{current_user}"):
             full = load_data(current_user); save_data(full[full["股票代號"] != row['股票代號']], current_user); st.rerun()
 
+    # --- 新增小計欄位 ---
+    st.markdown("---")
+    sub_total_cost = df["總投入成本"].sum()
+    sub_total_val = df["現值"].sum()
+    sub_total_profit = df["獲利"].sum()
+    sub_total_roi = (sub_total_profit / sub_total_cost * 100) if sub_total_cost != 0 else 0
+    
+    f_cols = st.columns(COLS_RATIO)
+    fmt = "{:,.0f}" if currency == "TWD" else "{:,.2f}"
+    sub_color = "red" if sub_total_profit > 0 else "green"
+    
+    f_cols[0].write("**[ 小計 ]**")
+    f_cols[4].write(f"**{fmt.format(sub_total_cost)}**")
+    f_cols[5].write(f"**{fmt.format(sub_total_val)}**")
+    f_cols[6].markdown(f"**:{sub_color}[{fmt.format(sub_total_profit)}]**")
+    f_cols[7].markdown(f"**:{sub_color}[{sub_total_roi:.2f}%]**")
+    st.write("") # 增加間距
+
 # ==========================================
 # 4. 主程式邏輯
 # ==========================================
@@ -206,25 +224,6 @@ if not df_record.empty:
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("💰 總資產 (TWD)", f"${t_val:,.0f}"); c2.metric("📈 總獲利 (TWD)", f"${t_prof:,.0f}"); c3.metric("📊 總報酬率", f"{roi:.2f}%"); c4.metric("💱 匯率", f"{usd_rate:.2f}")
 
-        # 回測圖表
-        st.divider(); st.subheader("📈 歷史淨值回測 (過去一年模擬)")
-        hist_prices = get_backtest_data(portfolio["股票代號"].tolist())
-        if not hist_prices.empty:
-            equity_curve = pd.Series(0.0, index=hist_prices.index)
-            fx_hist = hist_prices["USDTWD=X"].ffill()
-            for _, row in portfolio.iterrows():
-                p_hist = hist_prices[row["股票代號"]].ffill()
-                multiplier = fx_hist if row["幣別"] == "USD" else 1.0
-                equity_curve += p_hist * row["股數"] * multiplier
-            fig_hist = go.Figure()
-            fig_hist.add_trace(go.Scatter(x=equity_curve.index, y=equity_curve, name="組合淨值", line=dict(color='#00D1FF', width=3)))
-            start_val = equity_curve.iloc[0]
-            days = (equity_curve.index - equity_curve.index[0]).days
-            cost_line = start_val * (1 + 0.0265 * (days / 365))
-            fig_hist.add_trace(go.Scatter(x=equity_curve.index, y=cost_line, name="借貸成本基準 (2.65%)", line=dict(color='gray', dash='dash')))
-            fig_hist.update_layout(height=400, template="plotly_dark", hovermode='x unified', margin=dict(l=20, r=20, t=30, b=20))
-            st.plotly_chart(fig_hist, use_container_width=True)
-
         # 圓餅圖
         st.divider(); st.subheader("🎯 投資組合配置分析")
         pc1, pc2 = st.columns(2)
@@ -239,6 +238,24 @@ if not df_record.empty:
         for m, cur in [("🇹🇼 台股庫存", "TWD"), ("🇺🇸 美股庫存", "USD")]:
             m_df = portfolio[portfolio["幣別"] == cur]
             if not m_df.empty: display_market_table(m_df, m, cur, usd_rate, current_user)
+
+        # 淨值回測圖 (已移動到下方並移除基準線)
+        st.divider(); st.subheader("📈 歷史淨值回測 (過去一年模擬)")
+        hist_prices = get_backtest_data(portfolio["股票代號"].tolist())
+        if not hist_prices.empty:
+            equity_curve = pd.Series(0.0, index=hist_prices.index)
+            fx_hist = hist_prices["USDTWD=X"].ffill()
+            for _, row in portfolio.iterrows():
+                p_hist = hist_prices[row["股票代號"]].ffill()
+                multiplier = fx_hist if row["幣別"] == "USD" else 1.0
+                equity_curve += p_hist * row["股數"] * multiplier
+            fig_hist = go.Figure()
+            fig_hist.add_trace(go.Scatter(x=equity_curve.index, y=equity_curve, name="組合淨值", line=dict(color='#00D1FF', width=3)))
+            
+            # 原本的借貸成本基準線已在此移除
+            
+            fig_hist.update_layout(height=400, template="plotly_dark", hovermode='x unified', margin=dict(l=20, r=20, t=30, b=20))
+            st.plotly_chart(fig_hist, use_container_width=True)
 
     with tab2:
         target = st.selectbox("選擇分析標的：", portfolio["股票代號"].tolist())
