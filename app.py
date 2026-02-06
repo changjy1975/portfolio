@@ -292,7 +292,7 @@ if not df_record.empty:
             last_rsi = df_tech['RSI'].iloc[-1]
             last_close = df_tech['Close'].iloc[-1]
             ma20 = df_tech['MA20'].iloc[-1]
-            hc1.metric("目前 RSI", f"{last_rsi:.2f}", "超跌區" if last_rsi < 30 else "超買區" if last_rsi > 70 else "中性")
+            hc1.metric("目前 RSI", f"{last_rsi:.2f}", "超跌區" if last_rsi < 20 else "超買區" if last_rsi > 80 else "中性")
             hc2.metric("與月線(20MA)乖離", f"{((last_close/ma20)-1)*100:.2f}%")
             hc3.info("💡 綠色箭頭代表 RSI 超跌，可能為分批佈局時機。")
 
@@ -316,3 +316,4 @@ if not df_record.empty:
             st.plotly_chart(px.imshow(res['corr'], text_auto=".2f", color_continuous_scale='RdBu_r'), use_container_width=True)
 else:
     st.info("尚無持股資料，請從側邊欄新增。")
+
