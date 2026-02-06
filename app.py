@@ -206,10 +206,21 @@ if not df_record.empty:
     if current_user != "All": update_daily_snapshot(current_user, portfolio["現值_TWD"].sum(), portfolio["獲利_TWD"].sum(), usd_rate)
 
     with tab1:
+        # --- 新增：更新按鈕與頂部資訊欄 ---
+        col_btn, col_info = st.columns([1, 4])
+        with col_btn:
+            if st.button("🔄 更新最新報價", use_container_width=True):
+                st.cache_data.clear()
+                st.rerun()
+        
         t_val = float(portfolio["現值_TWD"].sum()); t_prof = float(portfolio["獲利_TWD"].sum())
         roi = (t_prof / (t_val - t_prof) * 100) if (t_val - t_prof) != 0 else 0
+        
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("💰 總資產 (TWD)", f"${t_val:,.0f}"); c2.metric("📈 總獲利 (TWD)", f"${t_prof:,.0f}"); c3.metric("📊 總報酬率", f"{roi:.2f}%"); c4.metric("💱 匯率", f"{usd_rate:.2f}")
+        c1.metric("💰 總資產 (TWD)", f"${t_val:,.0f}")
+        c2.metric("📈 總獲利 (TWD)", f"${t_prof:,.0f}")
+        c3.metric("📊 總報酬率", f"{roi:.2f}%")
+        c4.metric("💱 匯率", f"{usd_rate:.2f}")
 
         st.divider(); st.subheader("🎯 投資組合配置分析")
         pc1, pc2 = st.columns(2)
@@ -316,4 +327,3 @@ if not df_record.empty:
             st.plotly_chart(px.imshow(res['corr'], text_auto=".2f", color_continuous_scale='RdBu_r'), use_container_width=True)
 else:
     st.info("尚無持股資料，請從側邊欄新增。")
-
