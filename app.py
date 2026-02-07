@@ -15,7 +15,6 @@ import numpy as np
 # ==========================================
 st.set_page_config(page_title="Alan & Jenny 投資戰情室", layout="wide")
 
-# 初始化 Session State
 if 'mpt_results' not in st.session_state: st.session_state.mpt_results = None
 if 'sort_col' not in st.session_state: st.session_state.sort_col = "獲利"
 if 'sort_asc' not in st.session_state: st.session_state.sort_asc = False
@@ -64,7 +63,23 @@ def get_latest_quotes(symbols):
 def identify_currency(symbol):
     return "TWD" if (".TW" in symbol or ".TWO" in symbol) else "USD"
 
-# --- 技術指標與 MPT 計算 ---
+# --- 技術指標公式 ---
+def calculate_rsi(series, period=14):
+    delta = series.diff()
+    gain = delta.where(delta > 0, 0); loss = -delta.where(delta < 0, 0)
+    avg_gain = gain.ewm(com=period - 1, min_periods=period).mean()
+    avg_loss = loss.ewm(com=period - 1, min_periods=period).mean()
+    return 100 - (100 / (1 + avg_gain / avg_loss))
+
+def calculate_macd(series):
+    exp1 = series.ewm(span=12, adjust=False).mean(); exp2 = series.ewm(span=26, adjust=False).mean()
+    macd = exp1 - exp2; signal = macd.ewm(span=9, adjust=False).mean()
+    return macd, signal, macd - signal
+
+def calculate_bb(series, window=20):
+    ma = series.rolling(window=window).mean(); std = series.rolling(window=window).std()
+    return ma + (std * 2), ma, ma - (std * 2)
+
 def calculate_atr(df, period=14):
     high_low = df['High'] - df['Low']
     high_cp = np.abs(df['High'] - df['Close'].shift())
@@ -72,14 +87,13 @@ def calculate_atr(df, period=14):
     tr = pd.concat([high_low, high_cp, low_cp], axis=1).max(axis=1)
     return tr.rolling(window=period).mean()
 
+# --- MPT 引擎 ---
 def perform_mpt_simulation(portfolio_df):
     symbols = portfolio_df["股票代號"].tolist()
-    if len(symbols) < 2: return None, "至少需要 2 支標的才能進行優化模擬。"
+    if len(symbols) < 2: return None, "至少需要 2 支標的進行優化。"
     try:
-        # 下載過去 3 年數據
         data = yf.download(symbols, period="3y", interval="1d")['Close']
-        if isinstance(data, pd.Series): data = data.to_frame() # 單支處理
-        
+        if isinstance(data, pd.Series): data = data.to_frame()
         returns = data.ffill().pct_change().dropna()
         mean_returns = returns.mean() * 252
         cov_matrix = returns.cov() * 252
@@ -87,35 +101,27 @@ def perform_mpt_simulation(portfolio_df):
         num_portfolios = 2500
         results = np.zeros((3, num_portfolios))
         weights_record = []
-        
         for i in range(num_portfolios):
             weights = np.random.random(len(symbols))
             weights /= np.sum(weights)
             weights_record.append(weights)
             p_ret = np.sum(weights * mean_returns)
             p_std = np.sqrt(np.dot(weights.T, np.dot(cov_matrix, weights)))
-            results[0,i] = p_ret # 預期報酬
-            results[1,i] = p_std # 波動率
-            results[2,i] = (p_ret - 0.02) / p_std # 夏普比率 (假設無風險利率 2%)
+            results[0,i] = p_ret
+            results[1,i] = p_std
+            results[2,i] = (p_ret - 0.02) / p_std # 夏普比率
             
-        max_idx = np.argmax(results[2])
-        min_idx = np.argmin(results[1])
-        
+        max_idx = np.argmax(results[2]); min_idx = np.argmin(results[1])
         comparison = pd.DataFrame({
             "股票代號": symbols,
             "目前權重 (%)": (portfolio_df["現值_TWD"] / portfolio_df["現值_TWD"].sum() * 100).values,
             "Max Sharpe 建議 (%)": weights_record[max_idx] * 100,
             "Min Vol 建議 (%)": weights_record[min_idx] * 100
         })
-        
-        return {
-            "sim_df": pd.DataFrame({'Return': results[0], 'Volatility': results[1], 'Sharpe': results[2]}),
-            "comparison": comparison,
-            "max_sharpe": (results[0, max_idx], results[1, max_idx]),
-            "corr": returns.corr()
-        }, None
-    except Exception as e:
-        return None, f"計算錯誤: {str(e)}"
+        return {"sim_df": pd.DataFrame({'Return': results[0], 'Volatility': results[1], 'Sharpe': results[2]}),
+                "comparison": comparison, "max_sharpe": (results[0, max_idx], results[1, max_idx]),
+                "corr": returns.corr()}, None
+    except Exception as e: return None, str(e)
 
 # ==========================================
 # 3. 介面組件
@@ -132,8 +138,7 @@ def display_market_table(df, title, currency, usd_rate, current_user):
             if st.session_state.sort_col == col_name: st.session_state.sort_asc = not st.session_state.sort_asc
             else: st.session_state.sort_col, st.session_state.sort_asc = col_name, False
             st.rerun()
-    h_cols[8].write("**管理**")
-
+    
     df_sorted = df.sort_values(by=st.session_state.sort_col, ascending=st.session_state.sort_asc)
     for _, row in df_sorted.iterrows():
         r = st.columns(COLS_RATIO)
@@ -146,6 +151,7 @@ def display_market_table(df, title, currency, usd_rate, current_user):
 # ==========================================
 # 4. 主程式頁面
 # ==========================================
+
 with st.sidebar:
     st.title("👨‍👩‍👧 帳戶管理")
     current_user = st.selectbox("切換使用者：", ["Alan", "Jenny", "All"])
@@ -161,7 +167,7 @@ with st.sidebar:
 df_record = pd.concat([load_data("Alan"), load_data("Jenny")], ignore_index=True) if current_user == "All" else load_data(current_user)
 
 st.title(f"📈 {current_user} 投資戰情室")
-tab1, tab2, tab3 = st.tabs(["📊 庫存與績效", "🧠 技術健診 (ATR)", "⚖️ 組合分析 (MPT)"])
+tab1, tab2, tab3 = st.tabs(["📊 庫存配置與績效", "🧠 技術健診 (BB/MACD/ATR)", "⚖️ 組合分析 (MPT)"])
 
 if not df_record.empty:
     usd_rate = get_exchange_rate()
@@ -179,9 +185,11 @@ if not df_record.empty:
     portfolio["現值_TWD"] = portfolio.apply(lambda r: r["現值"] * (usd_rate if r["幣別"]=="USD" else 1), axis=1)
 
     with tab1:
-        # 新增：頂部更新按鈕
-        st.button("🔄 點擊更新最新股價", on_click=lambda: st.cache_data.clear(), use_container_width=True)
-        
+        # 新增：頂部股價更新按鈕
+        if st.button("🔄 點擊更新最新股價 (清除快取並重新抓取)", use_container_width=True):
+            st.cache_data.clear()
+            st.rerun()
+
         t_val = float(portfolio["現值_TWD"].sum()); t_prof = portfolio.apply(lambda r: r["獲利"] * (usd_rate if r["幣別"]=="USD" else 1), axis=1).sum()
         roi = (t_prof / (t_val - t_prof) * 100) if (t_val - t_prof) != 0 else 0
         c1, c2, c3, c4 = st.columns(4)
@@ -196,37 +204,74 @@ if not df_record.empty:
             if not m_df.empty: display_market_table(m_df, m, cur, usd_rate, current_user)
 
     with tab2:
-        st.subheader("🛡️ ATR 動態風險控管")
+        st.subheader("🛡️ 全方位技術指標分析")
         target = st.selectbox("選擇分析標的：", portfolio["股票代號"].tolist())
-        df_tech = yf.Ticker(target).history(period="1y")
+        period = st.select_slider("時間長度：", options=["3mo", "6mo", "1y", "2y"], value="1y")
+        df_tech = yf.Ticker(target).history(period=period)
+        
         if not df_tech.empty:
+            # --- 數據計算 ---
+            df_tech['MA20'] = df_tech['Close'].rolling(window=20).mean()
+            df_tech['RSI'] = calculate_rsi(df_tech['Close'])
             df_tech['ATR'] = calculate_atr(df_tech)
+            df_tech['BB_U'], df_tech['BB_M'], df_tech['BB_L'] = calculate_bb(df_tech['Close'])
+            df_tech['MACD'], df_tech['MACD_S'], df_tech['MACD_H'] = calculate_macd(df_tech['Close'])
+
             last_close = df_tech['Close'].iloc[-1]; last_atr = df_tech['ATR'].iloc[-1]
             sl_price = last_close - (2 * last_atr); tp_price = last_close + (3 * last_atr)
-            
-            fig = go.Figure(data=[go.Candlestick(x=df_tech.index, open=df_tech['Open'], high=df_tech['High'], low=df_tech['Low'], close=df_tech['Close'], name="K線")])
-            fig.add_hline(y=sl_price, line_dash="dash", line_color="red", annotation_text="ATR停損")
-            fig.add_hline(y=tp_price, line_dash="dash", line_color="lime", annotation_text="ATR停利")
-            fig.update_layout(height=500, template="plotly_dark", xaxis_rangeslider_visible=False)
+
+            # --- 建立三層子圖 ---
+            fig = make_subplots(rows=3, cols=1, shared_xaxes=True, 
+                               vertical_spacing=0.05, row_heights=[0.6, 0.15, 0.25],
+                               subplot_titles=("K線與布林通道", "RSI 強弱指標", "MACD 趨勢指標"))
+
+            # 1. K線 + 布林通道
+            fig.add_trace(go.Candlestick(x=df_tech.index, open=df_tech['Open'], high=df_tech['High'],
+                                         low=df_tech['Low'], close=df_tech['Close'], name="K線"), row=1, col=1)
+            fig.add_trace(go.Scatter(x=df_tech.index, y=df_tech['BB_U'], name="布林上軌", line=dict(color='rgba(173,216,230,0.5)', dash='dot')), row=1, col=1)
+            fig.add_trace(go.Scatter(x=df_tech.index, y=df_tech['BB_M'], name="布林中軌(20MA)", line=dict(color='orange', width=1)), row=1, col=1)
+            fig.add_trace(go.Scatter(x=df_tech.index, y=df_tech['BB_L'], name="布林下軌", line=dict(color='rgba(173,216,230,0.5)', dash='dot')), row=1, col=1)
+            # ATR 停損停利線
+            fig.add_hline(y=sl_price, line_dash="dash", line_color="red", annotation_text=f"ATR停損:{sl_price:.2f}", row=1, col=1)
+            fig.add_hline(y=tp_price, line_dash="dash", line_color="lime", annotation_text=f"ATR停利:{tp_price:.2f}", row=1, col=1)
+
+            # 2. RSI
+            fig.add_trace(go.Scatter(x=df_tech.index, y=df_tech['RSI'], name="RSI", line=dict(color='#FF00FF')), row=2, col=1)
+            fig.add_hline(y=70, line_dash="dot", line_color="red", row=2, col=1)
+            fig.add_hline(y=30, line_dash="dot", line_color="green", row=2, col=1)
+
+            # 3. MACD
+            m_colors = ['red' if val < 0 else 'green' for val in df_tech['MACD_H']]
+            fig.add_trace(go.Bar(x=df_tech.index, y=df_tech['MACD_H'], name="MACD柱狀", marker_color=m_colors), row=3, col=1)
+            fig.add_trace(go.Scatter(x=df_tech.index, y=df_tech['MACD'], name="DIF", line=dict(color='white')), row=3, col=1)
+            fig.add_trace(go.Scatter(x=df_tech.index, y=df_tech['MACD_S'], name="DEA", line=dict(color='yellow')), row=3, col=1)
+
+            fig.update_layout(height=800, template="plotly_dark", xaxis_rangeslider_visible=False, showlegend=False)
             st.plotly_chart(fig, use_container_width=True)
-            st.info(f"建議停損位：{sl_price:.2f} | 建議停利位：{tp_price:.2f}")
+            
+            hc1, hc2, hc3, hc4 = st.columns(4)
+            hc1.metric("當前 ATR (波動)", f"{last_atr:.2f}")
+            hc2.metric("建議停損點", f"{sl_price:.2f}", f"{(sl_price/last_close-1)*100:.1f}%", delta_color="inverse")
+            hc3.metric("建議停利點", f"{tp_price:.2f}", f"{(tp_price/last_close-1)*100:.1f}%")
+            hc4.metric("目前 RSI", f"{df_tech['RSI'].iloc[-1]:.1f}")
+            st.info("💡 提醒：當前 ATR 顯示標的震盪幅度。如果你有使用股票質押，請務必確保停損點設定高於券商的維持率警示價格線。")
 
     with tab3:
         st.subheader("⚖️ MPT 組合優化模擬")
-        if st.button("🚀 啟動優化模擬 (模擬 2500 種權重組合)", type="primary"):
-            with st.spinner("模擬計算中..."):
+        if st.button("🚀 啟動優化模擬 (2500次權重抽樣)", type="primary"):
+            with st.spinner("計算中，這可能需要幾秒鐘..."):
                 res, err = perform_mpt_simulation(portfolio)
                 if err: st.error(err)
                 else: st.session_state.mpt_results = res
         
         if st.session_state.mpt_results:
             res = st.session_state.mpt_results
-            col_a, col_b = st.columns([2, 1])
-            with col_a:
+            sc1, sc2 = st.columns([2, 1])
+            with sc1:
                 fig_mpt = px.scatter(res['sim_df'], x='Volatility', y='Return', color='Sharpe', title="效率前緣雲圖 (風險 vs 報酬)")
                 fig_mpt.add_trace(go.Scatter(x=[res['max_sharpe'][1]], y=[res['max_sharpe'][0]], mode='markers', marker=dict(color='red', size=15, symbol='star'), name='最優組合'))
                 st.plotly_chart(fig_mpt, use_container_width=True)
-            with col_b:
+            with sc2:
                 st.write("#### ⚖️ 建議配置比例")
                 st.dataframe(res['comparison'].set_index("股票代號").style.format("{:.2f}%"))
             st.divider(); st.write("#### 🔗 資產相關性矩陣"); st.plotly_chart(px.imshow(res['corr'], text_auto=".2f", color_continuous_scale='RdBu_r'), use_container_width=True)
