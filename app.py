@@ -188,33 +188,41 @@ if not df_record.empty:
         df_tech = yf.Ticker(target).history(period=period)
         
         if not df_tech.empty:
-            # 指標計算
+            # --- 1. 技術指標計算 ---
             df_tech['MA20'] = df_tech['Close'].rolling(window=20).mean()
             df_tech['MA50'] = df_tech['Close'].rolling(window=50).mean()
             df_tech['RSI'] = calculate_rsi(df_tech['Close'])
             df_tech['BB_U'], df_tech['BB_M'], df_tech['BB_L'] = calculate_bb(df_tech['Close'])
             df_tech['MACD'], df_tech['MACD_S'], df_tech['MACD_H'] = calculate_macd(df_tech['Close'])
 
-            # --- 新增：MACD 交叉訊號邏輯 ---
+            # --- 2. 交叉訊號與多指標共振邏輯 ---
+            # MACD 交叉
             df_tech['Golden_Cross'] = (df_tech['MACD'] > df_tech['MACD_S']) & (df_tech['MACD'].shift(1) <= df_tech['MACD_S'].shift(1))
             df_tech['Death_Cross'] = (df_tech['MACD'] < df_tech['MACD_S']) & (df_tech['MACD'].shift(1) >= df_tech['MACD_S'].shift(1))
+            
+            # 共振檢查
+            is_macd_golden = df_tech['Golden_Cross'].iloc[-1]
+            is_rsi_recovery = (df_tech['RSI'].iloc[-1] > 30) and (df_tech['RSI'].shift(1).iloc[-1] <= 30)
+            is_above_ma20 = df_tech['Close'].iloc[-1] > df_tech['MA20'].iloc[-1]
+            is_strong_buy = is_macd_golden and is_rsi_recovery and is_above_ma20
 
+            # --- 3. 繪圖區 ---
             fig = make_subplots(rows=3, cols=1, shared_xaxes=True, 
                                vertical_spacing=0.05, 
                                row_heights=[0.6, 0.15, 0.25],
-                               subplot_titles=("K線與自動訊號", "成交量", "MACD 指標"))
+                               subplot_titles=("K線與共振訊號", "成交量", "MACD 指標"))
 
-            # 1. K線與訊號標記
+            # K線
             fig.add_trace(go.Candlestick(x=df_tech.index, open=df_tech['Open'], high=df_tech['High'],
                                          low=df_tech['Low'], close=df_tech['Close'], name="K線"), row=1, col=1)
             
-            # 標註 MACD 金叉 (買入)
+            # 金叉標記
             gold_pts = df_tech[df_tech['Golden_Cross']]
             fig.add_trace(go.Scatter(x=gold_pts.index, y=gold_pts['Low']*0.97, mode='markers+text', 
                                      marker=dict(symbol='triangle-up', size=15, color='#FFD700'), 
                                      name='金叉買入', text="買", textposition="bottom center"), row=1, col=1)
             
-            # 標註 MACD 死叉 (賣出)
+            # 死叉標記
             death_pts = df_tech[df_tech['Death_Cross']]
             fig.add_trace(go.Scatter(x=death_pts.index, y=death_pts['High']*1.03, mode='markers+text', 
                                      marker=dict(symbol='triangle-down', size=15, color='#00FFFF'), 
@@ -224,11 +232,11 @@ if not df_record.empty:
             fig.add_trace(go.Scatter(x=df_tech.index, y=df_tech['MA20'], name="20MA", line=dict(color='yellow', width=1.5)), row=1, col=1)
             fig.add_trace(go.Scatter(x=df_tech.index, y=df_tech['MA50'], name="50MA", line=dict(color='orange', width=1.5)), row=1, col=1)
 
-            # 2. 成交量
+            # 成交量
             vol_colors = ['red' if df_tech.Open.iloc[i] > df_tech.Close.iloc[i] else 'green' for i in range(len(df_tech))]
             fig.add_trace(go.Bar(x=df_tech.index, y=df_tech['Volume'], name="成交量", marker_color=vol_colors), row=2, col=1)
 
-            # 3. MACD
+            # MACD
             m_colors = ['#FF5252' if val < 0 else '#4CAF50' for val in df_tech['MACD_H']]
             fig.add_trace(go.Bar(x=df_tech.index, y=df_tech['MACD_H'], name="MACD柱狀", marker_color=m_colors), row=3, col=1)
             fig.add_trace(go.Scatter(x=df_tech.index, y=df_tech['MACD'], name="DIF", line=dict(color='white')), row=3, col=1)
@@ -237,19 +245,32 @@ if not df_record.empty:
             fig.update_layout(height=800, template="plotly_dark", xaxis_rangeslider_visible=False, showlegend=False)
             st.plotly_chart(fig, use_container_width=True)
             
-            # 健康檢查小卡
+            # --- 4. 健康檢查與共振警告 ---
+            st.divider()
             hc1, hc2, hc3 = st.columns(3)
             last_rsi = df_tech['RSI'].iloc[-1]
-            last_macd = df_tech['MACD_H'].iloc[-1]
-            hc1.metric("目前 RSI", f"{last_rsi:.2f}", "超跌" if last_rsi < 30 else "超買" if last_rsi > 70 else "正常")
-            hc2.metric("MACD 柱狀體", f"{last_macd:.4f}", "多方強勢" if last_macd > 0 else "空方強勢")
-            hc3.info(f"💡 建議：{'金叉出現，可考慮分批進場' if df_tech['Golden_Cross'].iloc[-1] else '目前趨勢穩定'}")
+            last_macd_h = df_tech['MACD_H'].iloc[-1]
+            
+            with hc1:
+                st.metric("目前 RSI", f"{last_rsi:.2f}", delta="低檔回升" if is_rsi_recovery else None, delta_color="normal")
+            with hc2:
+                st.metric("MACD 柱狀體", f"{last_macd_h:.4f}", delta="金叉出現" if is_macd_golden else None)
+            with hc3:
+                ma20_dist = ((df_tech['Close'].iloc[-1] / df_tech['MA20'].iloc[-1]) - 1) * 100
+                st.metric("站上月線 (20MA)", f"{ma20_dist:.2f}%", delta="偏多" if is_above_ma20 else "偏空", delta_color="normal" if is_above_ma20 else "inverse")
+
+            if is_strong_buy:
+                st.success("🔥 **強烈買入共振觸發！**")
+                st.warning(f"⚠️ **{target}** 目前同時滿足「MACD 金叉」、「RSI 低點回升」及「股價站上 20MA」。")
+                st.info("💡 建議：此為高勝率佈局時機，請參考資產負債狀況適度配置。")
+            elif is_macd_golden or is_rsi_recovery:
+                st.info("🔍 部分技術指標轉強，建議靜待多重訊號確認。")
 
     with tab3:
         st.subheader("⚖️ MPT 組合優化模擬")
+        # (保留原本 MPT 的核心邏輯...)
         if st.button("🚀 啟動模擬計算", type="primary"):
-            # (此處保留原有的 MPT 模擬代碼內容...)
+            # 您原有的 perform_mpt_simulation 邏輯...
             pass
-
 else:
     st.info("尚無持股資料，請從側邊欄新增。")
