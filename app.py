@@ -88,23 +88,23 @@ def get_refined_signals(df):
     m_gold = (df['MACD'] > df['MACD_S']) & (df['MACD'].shift(1) <= df['MACD_S'].shift(1))
     m_dead = (df['MACD'] < df['MACD_S']) & (df['MACD'].shift(1) >= df['MACD_S'].shift(1))
     k_gold = (df['K'] > df['D']) & (df['K'].shift(1) <= df['D'].shift(1))
-    # 買進：價格 > 月線 & 季線 (上升趨勢) 且 (MACD金叉 或 KD低檔)
+    # 買進：趨勢向上(MA20>MA60) 且 (MACD金叉 或 KD低階金叉)
     buy = ( (df['Close'] > df['MA20']) & (df['MA20'] > df['MA60']) & (m_gold | (k_gold & (df['K'] < 40))) )
-    # 賣出：跌破MA5且死叉 或 RSI過熱 或 趨勢反轉跌破MA20
+    # 賣出：收盤破MA5且MACD死叉，或RSI極端過熱
     sell = ( (df['Close'] < df['MA5']) & m_dead ) | (df['RSI'] > 78) | ( (df['Close'].shift(1) > df['MA20']) & (df['Close'] < df['MA20']) )
     return buy, sell
 
 # --- 歷史回測與 MPT 引擎 ---
 @st.cache_data(ttl=3600)
-def fetch_backtest_engine(symbols, period="1y"):
+def fetch_backtest_data(symbols, period="1y"):
     if not symbols: return pd.DataFrame()
     data = yf.download(symbols + ["USDTWD=X"], period=period, interval="1d", progress=False)['Close']
     return data.ffill()
 
 def perform_mpt_simulation(portfolio_df, symbols):
     try:
-        data = fetch_backtest_engine(symbols, period="3y").dropna()
-        returns = data[symbols].pct_change().dropna()
+        data = yf.download(symbols, period="3y", interval="1d", progress=False)['Close'].ffill().dropna()
+        returns = data.pct_change().dropna()
         mean_rets, cov_mat = returns.mean() * 252, returns.cov() * 252
         num_p = 2000; results = np.zeros((3, num_p)); w_rec = []
         for i in range(num_p):
@@ -118,7 +118,7 @@ def perform_mpt_simulation(portfolio_df, symbols):
     except Exception as e: return None, str(e)
 
 # ==========================================
-# 3. 介面組件 (表格渲染)
+# 3. 介面呈現組件
 # ==========================================
 COLS_RATIO = [1.2, 0.8, 1, 1, 1.2, 1.2, 1.2, 1, 0.6]
 
@@ -180,17 +180,21 @@ if not df_raw.empty:
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("💰 總資產 (TWD)", f"${t_v:,.0f}"); c2.metric("📈 總獲利 (TWD)", f"${t_p:,.0f}"); c3.metric("📊 總報酬率", f"{(t_p/(t_v-t_p)*100 if t_v!=t_p else 0):.2f}%"); c4.metric("💱 匯率", f"{rate:.2f}")
 
-        # --- 配置圓餅圖 ---
+        # --- 配置圓餅圖與色彩優化 ---
         st.divider(); cp1, cp2 = st.columns([1, 1.5])
         with cp1:
-            st.subheader("🌐 市場資產佔比")
+            st.subheader("🌐 市場資產比例")
             m_dist = portfolio.groupby("幣別")["現值_TWD"].sum().reset_index()
-            st.plotly_chart(px.pie(m_dist, values="現值_TWD", names="幣別", hole=0.5, color_discrete_sequence=["#FF4B4B", "#1F77B4"]), use_container_width=True)
+            # 色彩優化：台股紅、美股科技藍
+            st.plotly_chart(px.pie(m_dist, values="現值_TWD", names="幣別", hole=0.5, 
+                                   color="幣別", color_discrete_map={"TWD": "#FF4B4B", "USD": "#00D1FF"}), use_container_width=True)
         with cp2:
             st.subheader("🎯 個股配置分析")
             v_mode = st.radio("範圍", ["全部", "台股", "美股"], horizontal=True, label_visibility="collapsed")
             p_df = portfolio[portfolio["幣別"] == ("TWD" if v_mode == "台股" else "USD")] if v_mode != "全部" else portfolio
-            if not p_df.empty: st.plotly_chart(px.pie(p_df, values="現值_TWD", names="股票代號", hole=0.4), use_container_width=True)
+            if not p_df.empty: 
+                st.plotly_chart(px.pie(p_df, values="現值_TWD", names="股票代號", hole=0.4, 
+                                       color_discrete_sequence=px.colors.qualitative.Vivid), use_container_width=True)
 
         # --- 庫存列表 ---
         st.divider()
@@ -201,8 +205,8 @@ if not df_raw.empty:
         if not us_p.empty: render_table(us_p, "USD", current_user)
 
         # --- 歷史回測 (放置在美股之後) ---
-        st.divider(); st.subheader("📈 組合淨值 1 年回測")
-        h_df = fetch_backtest_engine(portfolio["股票代號"].tolist())
+        st.divider(); st.subheader("📈 組合淨值 1 年歷史回測")
+        h_df = fetch_backtest_data(portfolio["股票代號"].tolist())
         if not h_df.empty:
             eq = pd.Series(0.0, index=h_df.index); fx = h_df["USDTWD=X"].ffill()
             for _, r in portfolio.iterrows():
@@ -240,4 +244,4 @@ if not df_raw.empty:
             with cb: st.write("#### ⚖️ 配置建議"); st.dataframe(r['comparison'].set_index("股票代號").style.format("{:.2f}%"))
             st.divider(); st.write("#### 🔗 相關性矩陣"); st.plotly_chart(px.imshow(r['corr'], text_auto=".2f", color_continuous_scale='RdBu_r'), use_container_width=True)
 else:
-    st.info("請先從側邊欄新增持股資料。")
+    st.info("請先新增持股資料。")
