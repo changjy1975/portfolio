@@ -70,7 +70,7 @@ def calculate_indicators(df):
     df['MA20'] = df['Close'].rolling(20).mean()
     df['MA60'] = df['Close'].rolling(60).mean()
     
-    # 新增 EMA 指標
+    # EMA 指標
     df['EMA10'] = df['Close'].ewm(span=10, adjust=False).mean()
     df['EMA20'] = df['Close'].ewm(span=20, adjust=False).mean()
     
@@ -228,36 +228,40 @@ if not df_raw.empty:
             df_t = calculate_indicators(df_t); df_t['Buy'], df_t['Sell'] = get_refined_signals(df_t)
             lc = df_t['Close'].iloc[-1]; sl, tp = lc - (2*df_t['ATR'].iloc[-1]), lc + (3.5*df_t['ATR'].iloc[-1])
             
-            # --- 三層式技術圖表 ---
-            fig = make_subplots(rows=3, cols=1, shared_xaxes=True, 
-                                vertical_spacing=0.05, 
-                                row_heights=[0.5, 0.25, 0.25],
-                                subplot_titles=("價格與 EMA 趨勢", "MACD 動能指標", "RSI & KD 強弱勢"))
+            # --- 四層式技術圖表 (RSI 與 KD 分開) ---
+            fig = make_subplots(rows=4, cols=1, shared_xaxes=True, 
+                                vertical_spacing=0.03, 
+                                row_heights=[0.4, 0.2, 0.2, 0.2],
+                                subplot_titles=("價格與 EMA 趨勢", "MACD 指標", "RSI 強弱勢", "KD 隨機指標"))
 
             # Row 1: K線 + EMA 10/20
             fig.add_trace(go.Candlestick(x=df_t.index, open=df_t['Open'], high=df_t['High'], low=df_t['Low'], close=df_t['Close'], name="K線"), row=1, col=1)
             fig.add_trace(go.Scatter(x=df_t.index, y=df_t['EMA10'], line=dict(color='orange', width=1.5), name='EMA10'), row=1, col=1)
             fig.add_trace(go.Scatter(x=df_t.index, y=df_t['EMA20'], line=dict(color='cyan', width=1.5), name='EMA20'), row=1, col=1)
             
-            # 買賣點與止盈止損
+            # 買賣點
             b, s = df_t[df_t['Buy']], df_t[df_t['Sell']]
             fig.add_trace(go.Scatter(x=b.index, y=b['Low']*0.98, mode='markers', marker=dict(symbol='triangle-up', size=14, color='lime'), name='買'), row=1, col=1)
             fig.add_trace(go.Scatter(x=s.index, y=s['High']*1.02, mode='markers', marker=dict(symbol='triangle-down', size=14, color='red'), name='賣'), row=1, col=1)
             fig.add_hline(y=sl, line_dash="dash", line_color="red", row=1, col=1); fig.add_hline(y=tp, line_dash="dash", line_color="lime", row=1, col=1)
 
             # Row 2: MACD
-            fig.add_trace(go.Bar(x=df_t.index, y=df_t['MACD_H'], marker_color=['red' if v<0 else 'green' for v in df_t['MACD_H']], name='柱狀體'), row=2, col=1)
+            fig.add_trace(go.Bar(x=df_t.index, y=df_t['MACD_H'], marker_color=['red' if v<0 else 'green' for v in df_t['MACD_H']], name='MACD柱'), row=2, col=1)
             fig.add_trace(go.Scatter(x=df_t.index, y=df_t['MACD'], line=dict(color='white', width=1.2), name='MACD'), row=2, col=1)
             fig.add_trace(go.Scatter(x=df_t.index, y=df_t['MACD_S'], line=dict(color='yellow', width=1), name='訊號線'), row=2, col=1)
 
-            # Row 3: RSI & KD
+            # Row 3: RSI (獨立)
             fig.add_trace(go.Scatter(x=df_t.index, y=df_t['RSI'], line=dict(color='#E377C2', width=2), name='RSI'), row=3, col=1)
-            fig.add_hline(y=70, line_dash="dot", line_color="red", row=3, col=1)
-            fig.add_hline(y=30, line_dash="dot", line_color="green", row=3, col=1)
-            fig.add_trace(go.Scatter(x=df_t.index, y=df_t['K'], line=dict(color='rgba(255,255,255,0.4)', dash='dash'), name='K'), row=3, col=1)
-            fig.add_trace(go.Scatter(x=df_t.index, y=df_t['D'], line=dict(color='rgba(255,255,0,0.4)', dash='dash'), name='D'), row=3, col=1)
+            fig.add_hline(y=70, line_dash="dot", line_color="red", line_width=1, row=3, col=1)
+            fig.add_hline(y=30, line_dash="dot", line_color="green", line_width=1, row=3, col=1)
 
-            fig.update_layout(height=850, template="plotly_dark", xaxis_rangeslider_visible=False, showlegend=True)
+            # Row 4: KD (獨立)
+            fig.add_trace(go.Scatter(x=df_t.index, y=df_t['K'], line=dict(color='white', width=1.2), name='K值'), row=4, col=1)
+            fig.add_trace(go.Scatter(x=df_t.index, y=df_t['D'], line=dict(color='yellow', width=1.2), name='D值'), row=4, col=1)
+            fig.add_hline(y=80, line_dash="dot", line_color="gray", line_width=0.5, row=4, col=1)
+            fig.add_hline(y=20, line_dash="dot", line_color="gray", line_width=0.5, row=4, col=1)
+
+            fig.update_layout(height=1000, template="plotly_dark", xaxis_rangeslider_visible=False, showlegend=True)
             st.plotly_chart(fig, use_container_width=True)
 
     with tab3:
