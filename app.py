@@ -14,7 +14,6 @@ import numpy as np
 # ==========================================
 st.set_page_config(page_title="Alan & Jenny 投資戰情室", layout="wide")
 
-# 初始化 Session State
 if 'mpt_results' not in st.session_state: st.session_state.mpt_results = None
 if 'sort_col' not in st.session_state: st.session_state.sort_col = "獲利"
 if 'sort_asc' not in st.session_state: st.session_state.sort_asc = False
@@ -63,49 +62,60 @@ def get_latest_quotes(symbols):
 def identify_currency(symbol):
     return "TWD" if (".TW" in symbol or ".TWO" in symbol) else "USD"
 
-# --- 技術指標與精確訊號計算 ---
+# --- 技術指標計算 ---
 def calculate_indicators(df):
-    # 移動平均線
+    # 均線族群
     df['MA5'] = df['Close'].rolling(5).mean()
     df['MA20'] = df['Close'].rolling(20).mean()
     df['MA60'] = df['Close'].rolling(60).mean()
-    
-    # EMA 指標
     df['EMA10'] = df['Close'].ewm(span=10, adjust=False).mean()
     df['EMA20'] = df['Close'].ewm(span=20, adjust=False).mean()
     
-    # RSI 指標
+    # RSI
     delta = df['Close'].diff()
     gain = (delta.where(delta > 0, 0)).ewm(com=13, adjust=False).mean()
     loss = (-delta.where(delta < 0, 0)).ewm(com=13, adjust=False).mean()
     df['RSI'] = 100 - (100 / (1 + gain / loss))
     
-    # MACD 指標
+    # MACD
     e1, e2 = df['Close'].ewm(span=12, adjust=False).mean(), df['Close'].ewm(span=26, adjust=False).mean()
     df['MACD'] = e1 - e2
     df['MACD_S'] = df['MACD'].ewm(span=9, adjust=False).mean()
     df['MACD_H'] = df['MACD'] - df['MACD_S']
     
-    # KD 指標
+    # KD
     l9, h9 = df['Low'].rolling(9).min(), df['High'].rolling(9).max()
     rsv = (df['Close'] - l9) / (h9 - l9) * 100
-    df['K'] = rsv.ewm(com=2, adjust=False).mean(); df['D'] = df['K'].ewm(com=2, adjust=False).mean()
+    df['K'] = rsv.ewm(com=2, adjust=False).mean()
+    df['D'] = df['K'].ewm(com=2, adjust=False).mean()
     
-    # ATR 波動率
+    # ATR
     tr = pd.concat([df['High']-df['Low'], abs(df['High']-df['Close'].shift()), abs(df['Low']-df['Close'].shift())], axis=1).max(axis=1)
     df['ATR'] = tr.rolling(14).mean()
     return df
 
 def get_refined_signals(df):
-    """精準訊號濾鏡：趨勢與動能雙重確認"""
+    """精準訊號濾鏡：改採事件觸發邏輯以減少重疊訊號"""
+    # 交叉事件
     m_gold = (df['MACD'] > df['MACD_S']) & (df['MACD'].shift(1) <= df['MACD_S'].shift(1))
     m_dead = (df['MACD'] < df['MACD_S']) & (df['MACD'].shift(1) >= df['MACD_S'].shift(1))
     k_gold = (df['K'] > df['D']) & (df['K'].shift(1) <= df['D'].shift(1))
+    
+    # 買進：趨勢向上且 (MACD金叉 或 KD低階金叉)
     buy = ( (df['Close'] > df['MA20']) & (df['MA20'] > df['MA60']) & (m_gold | (k_gold & (df['K'] < 40))) )
-    sell = ( (df['Close'] < df['MA5']) & m_dead ) | (df['RSI'] > 78) | ( (df['Close'].shift(1) > df['MA20']) & (df['Close'] < df['MA20']) )
+    
+    # 賣出：
+    # 1. MACD死叉且破5日線
+    s1 = (df['Close'] < df['MA5']) & m_dead
+    # 2. RSI 剛進入超買區 (>78) - 改為事件判定
+    s2 = (df['RSI'] > 78) & (df['RSI'].shift(1) <= 78)
+    # 3. 收盤剛跌破 20 日線 - 事件判定
+    s3 = (df['Close'].shift(1) > df['MA20']) & (df['Close'] < df['MA20'])
+    
+    sell = s1 | s2 | s3
     return buy, sell
 
-# --- 歷史回測與 MPT 引擎 ---
+# --- 歷史回測與 MPT ---
 @st.cache_data(ttl=3600)
 def fetch_backtest_data(symbols, period="1y"):
     if not symbols: return pd.DataFrame()
@@ -195,15 +205,13 @@ if not df_raw.empty:
         with cp1:
             st.subheader("🌐 市場資產比例")
             m_dist = portfolio.groupby("幣別")["現值_TWD"].sum().reset_index()
-            st.plotly_chart(px.pie(m_dist, values="現值_TWD", names="幣別", hole=0.5, 
-                                   color="幣別", color_discrete_map={"TWD": "#FF4B4B", "USD": "#00D1FF"}), use_container_width=True)
+            st.plotly_chart(px.pie(m_dist, values="現值_TWD", names="幣別", hole=0.5, color="幣別", color_discrete_map={"TWD": "#FF4B4B", "USD": "#00D1FF"}), use_container_width=True)
         with cp2:
             st.subheader("🎯 個股配置分析")
             v_mode = st.radio("範圍", ["全部", "台股", "美股"], horizontal=True, label_visibility="collapsed")
             p_df = portfolio[portfolio["幣別"] == ("TWD" if v_mode == "台股" else "USD")] if v_mode != "全部" else portfolio
             if not p_df.empty: 
-                st.plotly_chart(px.pie(p_df, values="現值_TWD", names="股票代號", hole=0.4, 
-                                       color_discrete_sequence=px.colors.qualitative.Vivid), use_container_width=True)
+                st.plotly_chart(px.pie(p_df, values="現值_TWD", names="股票代號", hole=0.4, color_discrete_sequence=px.colors.qualitative.Vivid), use_container_width=True)
 
         st.divider()
         tw_p = portfolio[portfolio["幣別"] == "TWD"]
@@ -228,34 +236,33 @@ if not df_raw.empty:
             df_t = calculate_indicators(df_t); df_t['Buy'], df_t['Sell'] = get_refined_signals(df_t)
             lc = df_t['Close'].iloc[-1]; sl, tp = lc - (2*df_t['ATR'].iloc[-1]), lc + (3.5*df_t['ATR'].iloc[-1])
             
-            # --- 四層式技術圖表 (RSI 與 KD 分開) ---
-            fig = make_subplots(rows=4, cols=1, shared_xaxes=True, 
-                                vertical_spacing=0.03, 
+            # --- 四層式圖表 ---
+            fig = make_subplots(rows=4, cols=1, shared_xaxes=True, vertical_spacing=0.03, 
                                 row_heights=[0.4, 0.2, 0.2, 0.2],
-                                subplot_titles=("價格與 EMA 趨勢", "MACD 指標", "RSI 強弱勢", "KD 隨機指標"))
+                                subplot_titles=("價格與 EMA 均線", "MACD 指標", "RSI 強弱勢", "KD 隨機指標"))
 
-            # Row 1: K線 + EMA 10/20
+            # Row 1: K線 + EMA
             fig.add_trace(go.Candlestick(x=df_t.index, open=df_t['Open'], high=df_t['High'], low=df_t['Low'], close=df_t['Close'], name="K線"), row=1, col=1)
             fig.add_trace(go.Scatter(x=df_t.index, y=df_t['EMA10'], line=dict(color='orange', width=1.5), name='EMA10'), row=1, col=1)
             fig.add_trace(go.Scatter(x=df_t.index, y=df_t['EMA20'], line=dict(color='cyan', width=1.5), name='EMA20'), row=1, col=1)
             
-            # 買賣點
+            # 買賣點與止盈止損
             b, s = df_t[df_t['Buy']], df_t[df_t['Sell']]
-            fig.add_trace(go.Scatter(x=b.index, y=b['Low']*0.98, mode='markers', marker=dict(symbol='triangle-up', size=14, color='lime'), name='買'), row=1, col=1)
-            fig.add_trace(go.Scatter(x=s.index, y=s['High']*1.02, mode='markers', marker=dict(symbol='triangle-down', size=14, color='red'), name='賣'), row=1, col=1)
+            fig.add_trace(go.Scatter(x=b.index, y=b['Low']*0.98, mode='markers', marker=dict(symbol='triangle-up', size=14, color='lime'), name='買入'), row=1, col=1)
+            fig.add_trace(go.Scatter(x=s.index, y=s['High']*1.02, mode='markers', marker=dict(symbol='triangle-down', size=14, color='red'), name='賣出'), row=1, col=1)
             fig.add_hline(y=sl, line_dash="dash", line_color="red", row=1, col=1); fig.add_hline(y=tp, line_dash="dash", line_color="lime", row=1, col=1)
 
             # Row 2: MACD
             fig.add_trace(go.Bar(x=df_t.index, y=df_t['MACD_H'], marker_color=['red' if v<0 else 'green' for v in df_t['MACD_H']], name='MACD柱'), row=2, col=1)
-            fig.add_trace(go.Scatter(x=df_t.index, y=df_t['MACD'], line=dict(color='white', width=1.2), name='MACD'), row=2, col=1)
+            fig.add_trace(go.Scatter(x=df_t.index, y=df_t['MACD'], line=dict(color='white', width=1.2), name='MACD快線'), row=2, col=1)
             fig.add_trace(go.Scatter(x=df_t.index, y=df_t['MACD_S'], line=dict(color='yellow', width=1), name='訊號線'), row=2, col=1)
 
-            # Row 3: RSI (獨立)
+            # Row 3: RSI
             fig.add_trace(go.Scatter(x=df_t.index, y=df_t['RSI'], line=dict(color='#E377C2', width=2), name='RSI'), row=3, col=1)
             fig.add_hline(y=70, line_dash="dot", line_color="red", line_width=1, row=3, col=1)
             fig.add_hline(y=30, line_dash="dot", line_color="green", line_width=1, row=3, col=1)
 
-            # Row 4: KD (獨立)
+            # Row 4: KD
             fig.add_trace(go.Scatter(x=df_t.index, y=df_t['K'], line=dict(color='white', width=1.2), name='K值'), row=4, col=1)
             fig.add_trace(go.Scatter(x=df_t.index, y=df_t['D'], line=dict(color='yellow', width=1.2), name='D值'), row=4, col=1)
             fig.add_hline(y=80, line_dash="dot", line_color="gray", line_width=0.5, row=4, col=1)
